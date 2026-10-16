@@ -1,0 +1,9 @@
+# Development and test dependencies for the Blender add-on.
+# Installed into addon/.venv by scripts/setup_dev.sh. Requires Python 3.13.
+#
+# Keep bpy matching the Blender version you test with by hand (Blender 5.2 LTS).
+
+bpy==5.2.2                          # Blender itself as a Python module, for headless tests
+fake-bpy-module-5.2==20260730       # Type stubs only (bpy-stubs): VS Code autocomplete and type checks
+pytest>=8.2
+ruff>=0.5

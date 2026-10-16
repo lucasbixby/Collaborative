@@ -1,0 +1,26 @@
+{
+  // Read by VS Code's Python type checker (Pylance) and by pyright.
+  // Each part of the repo has its own Python version and rules.
+  "executionEnvironments": [
+    {
+      "root": "addon",
+      "pythonVersion": "3.13",
+      "extraPaths": ["addon/tests"],
+      // Blender declares properties as `name: bpy.props.StringProperty(...)`, which is
+      // valid for Blender but not a type annotation a type checker understands.
+      "reportInvalidTypeForm": "none",
+      // The bpy stubs mark most UI objects (self.layout, context.object, ...) as possibly
+      // None, so every Blender UI line would be flagged.
+      "reportOptionalMemberAccess": "none",
+      // Operators return {"FINISHED"} etc., which the stubs type more strictly than set[str].
+      "reportIncompatibleMethodOverride": "none",
+      // Blender's own modules (addon_utils, ...) exist only inside bpy at runtime; stubs cover them.
+      "reportMissingModuleSource": "none"
+    },
+    {
+      "root": "server",
+      "pythonVersion": "3.12"
+    }
+  ],
+  "exclude": ["**/node_modules", "**/.venv", "web"]
+}

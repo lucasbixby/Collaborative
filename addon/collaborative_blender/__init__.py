@@ -8,13 +8,13 @@ bl_info = {
     "name": "Collaborative",
     "author": "Lucas Bixby",
     "version": (0, 1, 0),
-    "blender": (4, 2, 0),
+    "blender": (5, 2, 0),
     "location": "View3D > Sidebar > Collaborative",
     "description": "Edit the same scene live with other people through a shared room",
     "category": "System",
 }
 
-from . import operators, panel, preferences  # noqa: E402
+from . import operators, panel, preferences
 
 _modules = (preferences, operators, panel)
 

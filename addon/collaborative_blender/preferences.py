@@ -4,7 +4,7 @@ import bpy
 
 
 class CollaborativePreferences(bpy.types.AddonPreferences):
-    bl_idname = __package__
+    bl_idname = __name__.partition(".")[0]  # the add-on package name
 
     server_url: bpy.props.StringProperty(name="Server URL", default="ws://localhost:8000")
     auth_token: bpy.props.StringProperty(name="Auth token", subtype="PASSWORD")

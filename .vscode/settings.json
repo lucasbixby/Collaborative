@@ -1,0 +1,37 @@
+{
+  // Python: use the add-on's environment (created by addon/scripts/setup_dev.sh).
+  // For server work, switch interpreter with "Python: Select Interpreter".
+  "python.defaultInterpreterPath": "${workspaceFolder}/addon/.venv/bin/python",
+
+  // Testing panel (beaker icon): runs the headless add-on tests.
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.cwd": "${workspaceFolder}/addon",
+  "python.testing.pytestArgs": ["tests"],
+
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+
+  // Blender Development extension (JacquesLucke.blender-development).
+  // "Blender: Start" launches Blender with the add-on loaded and the debugger attached;
+  // saving a file reloads the add-on inside the running Blender.
+  "blender.executables": [
+    {
+      "name": "Blender 5.2",
+      "path": "/Applications/Blender.app/Contents/MacOS/Blender",
+      "isDefault": true
+    }
+  ],
+  "blender.addonFolders": ["addon/collaborative_blender"],
+  "blender.addon.reloadOnSave": true,
+  "blender.environmentVariables": {
+    "COLLAB_CLIENT": "vscode"
+  },
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true
+  }
+}

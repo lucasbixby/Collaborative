@@ -1,0 +1,47 @@
+{
+  // Run with Cmd+Shift+P > "Tasks: Run Task".
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Add-on: run tests",
+      "type": "shell",
+      "command": ".venv/bin/python -m pytest",
+      "options": { "cwd": "${workspaceFolder}/addon" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Add-on: lint",
+      "type": "shell",
+      "command": ".venv/bin/ruff check .",
+      "options": { "cwd": "${workspaceFolder}/addon" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Add-on: set up dev environment",
+      "type": "shell",
+      "command": "addon/scripts/setup_dev.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "Add-on: link into Blender",
+      "type": "shell",
+      "command": "addon/scripts/link_addon.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "Blender: start one client",
+      "type": "shell",
+      "command": "addon/scripts/blender.sh",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Blender: start two clients (A and B)",
+      "type": "shell",
+      "command": "addon/scripts/blender.sh --two",
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

@@ -22,5 +22,9 @@ addon/*.zip
 
 # OS / editors
 .DS_Store
-.vscode/
 .idea/
+# Share the project's VS Code setup, keep personal files out
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json

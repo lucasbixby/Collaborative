@@ -1,0 +1,15 @@
+# Tool configuration for the add-on. The add-on is not a pip package; Blender loads
+# collaborative_blender/ directly. Dependencies are in requirements-dev.txt.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# Default rule set plus import sorting. Type-checker settings for the add-on live in the
+# repo-root pyrightconfig.json, which is where VS Code (Pylance) looks for them.
+extend-select = ["I"]
