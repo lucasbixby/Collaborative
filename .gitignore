@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Server runtime data
+server/data/
+*.db
+.env
+
+# Node
+node_modules/
+web/dist/
+
+# Blender
+*.blend1
+addon/*.zip
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
