@@ -3,7 +3,7 @@ Collaborative is a backend-focused sync platform that lets several people edit t
 
 Each user runs Blender locally with an add-on. A FastAPI relay orders, validates and broadcasts small operations between them, so edits appear live. The server never runs Blender. Every user needs their own legal access to Blender.
 
-See [docs/proposal.pdf](docs/proposal.pdf) for the full proposal and [docs/architecture.md](docs/architecture.md) for how the code maps to it.
+See [docs/proposal.pdf](docs/proposal.pdf) for the full proposal, [docs/architecture.md](docs/architecture.md) for how the code maps to it, and [docs/devlog.md](docs/devlog.md) for the decisions made along the way.
 
 ## Repository layout
 
