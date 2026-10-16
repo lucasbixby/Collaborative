@@ -1,0 +1,14 @@
+# Success criterion: the server runs from a single command.
+#   docker compose up --build
+services:
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    environment:
+      COLLAB_SECRET_KEY: ${COLLAB_SECRET_KEY:-dev-only-change-me}
+    volumes:
+      - server-data:/srv/data   # database + asset store survive restarts
+
+volumes:
+  server-data:
