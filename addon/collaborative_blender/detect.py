@@ -10,7 +10,9 @@ Changes caused by applying a remote operation must be skipped (see apply.py) to 
 
 import bpy
 from bpy.app.handlers import persistent
+
 from .log import log
+
 
 @persistent
 def _on_depsgraph_update(scene, depsgraph):
