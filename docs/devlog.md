@@ -27,7 +27,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| Next up | #3 Spike: Blender change detection |
+| In progress | #3 Spike: Blender change detection — decided (Plan A), a few checks left |
+| Next up | #4 Stable object IDs, #5 Detect local transform changes |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow |
 
 ## Decision index
@@ -51,6 +52,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-015 | Log lines tagged with the client name (A / B) | 10/15 | Active |
 | D-016 | Relax four type-checker rules for the add-on only | 10/15 | Active |
 | D-017 | Track features as GitHub issues on a Project board | 10/15 | Active |
+| D-018 | Plan A: depsgraph handler as the trigger, diff against a cache | 10/16 | Active |
+| D-019 | Coalesce changes and send every ~50 ms | 10/16 | Active |
+| D-020 | Creates, deletes and undo found by a full object-set diff | 10/16 | Active |
+| D-021 | Create operations carry mesh data and the target collection | 10/16 | Active |
 
 ## Log
 
@@ -132,3 +137,24 @@ feature from the proposal, grouped by milestones and labels, plus this log.
   `spike`, `testing`, `stretch`, and `hand-written` for work I write myself (D-007).
 
 **Open / follow-up:** next is the change-detection spike (#3).
+
+### 2026-10-16 · Change-detection spike (#3)
+
+Wrote a logging handler in `detect.py` and recorded what Blender 5.2 reports for each kind of
+edit (drag, N panel, rotate, add, delete, rename, duplicate, undo, Edit Mode). Plan A works;
+polling isn't needed. Full results in [spike-notes.md](spike-notes.md).
+
+| Decision | Why |
+|---|---|
+| D-018: `depsgraph_update_post` decides *when* to look; comparing against a cache of last-known values decides *what* changed | The handler fires for every edit we tried, including N-panel typing, but it only says which data-blocks were touched, not their values, and it also reports objects that didn't change (adding one object reports the camera and light too). Rejected: polling every object on a timer (Plan B), which costs work even when nothing changes. |
+| D-019: The handler only marks objects dirty; a ~50 ms timer sends their current values | Dragging fires 50–60 updates per second per object. Sending the latest value 20 times a second still looks smooth and stays well inside the 200 ms latency target. The final position is always sent. |
+| D-020: Creations, deletions and undo / redo are found by comparing the scene's object set with the cache | A deleted object never appears in the updates, and undo only reports the scene. A full diff on collection updates and on `undo_post` / `redo_post` catches all three with one mechanism. |
+| D-021: A create operation includes the mesh data (vertices, faces), transform and collection | The updates don't say what kind of object was added, so the other client can't rebuild it from anything less. Large meshes go to content-addressed storage later (#27). |
+
+**Details:**
+- Renames report one flag-less update, so objects are tracked by a stable ID (`obj["collab_id"]`, #4), never by name; the cache stores IDs and values, never object references (undo invalidates them).
+- Edit Mode vertex moves do report `geometry` on the Object and Mesh, so mesh sync (#26) is feasible.
+- Two new assumption tests: rename reports a flag-less update; adding an object reports its collection.
+
+**Open / follow-up:** Adjust Last Operation behaviour, Shift+D copying `collab_id`, quaternion
+rotation (listed in spike-notes.md). Next: #4 stable IDs and #5 transform detection.

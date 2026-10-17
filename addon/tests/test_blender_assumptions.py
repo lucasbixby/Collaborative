@@ -33,6 +33,27 @@ def test_custom_property_change_reports_nothing(depsgraph_log):
     assert depsgraph_log.flush() == []
 
 
+def test_renaming_reports_the_object_with_no_flags(depsgraph_log):
+    # A rename can't be told apart from other flag-less updates, so objects need stable IDs.
+    cube = _add_cube()
+    depsgraph_log.flush()
+
+    cube.name = "Box"
+
+    assert ("Box", "Object", False, False) in depsgraph_log.flush()
+
+
+def test_adding_an_object_reports_its_collection(depsgraph_log):
+    # The collection update is the signal to compare the object set with the cache.
+    depsgraph_log.flush()
+
+    _add_cube()
+
+    updates = depsgraph_log.flush()
+    assert any(kind == "Collection" for _, kind, *_ in updates)
+    assert any(name == "Cube" and kind == "Object" for name, kind, *_ in updates)
+
+
 def test_deleting_an_object_does_not_report_the_object(depsgraph_log):
     # Deletions must be found by diffing the set of objects, not from depsgraph.updates.
     cube = _add_cube()
