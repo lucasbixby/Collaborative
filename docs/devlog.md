@@ -27,9 +27,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #3 Spike: Blender change detection — decided (Plan A), a few checks left |
-| Next up | #4 Stable object IDs, #5 Detect local transform changes |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow |
+| Next up | #4 Stable object IDs, then #5 Detect local transform changes |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike |
+| Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
 
 ## Decision index
 
