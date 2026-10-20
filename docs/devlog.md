@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #5 Detect local transform changes |
+| In progress | #5 Detect local transform changes (implementation done; manual checks open) |
 | Next up | #8 Lamport clock, #9 last-writer-wins |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #7 Operation format |
-| Loose ends | spike checks still open (Adjust Last Operation, quaternion rotation) |
+| Loose ends | #5's manual checks (undo/redo, drag/N-panel/quaternion); Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -68,6 +68,11 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-030 | Planning chat manages the project; Claude Code on my Mac implements | 10/20 | Active |
 | D-031 | Object IDs live in the custom property `obj["collab_id"]`, a lowercase uuid4 string | 10/20 | Active |
 | D-032 | Duplicate IDs are resolved by `session_uid`: the lowest keeps the ID, the rest get new ones | 10/20 | Active |
+| D-033 | Detection handlers only set a dirty flag; a 50 ms timer diffs the whole scene against a cache keyed by `collab_id` | 10/20 | Active |
+| D-034 | A new object enters the cache silently (no op for its initial state); a deleted object silently leaves it | 10/20 | Active |
+| D-035 | `suppressed()` refreshes the cache from the scene on exit, without emitting | 10/20 | Active |
+| D-036 | Start / Stop detection button in the panel logs batches as JSON until Join room (#13) exists | 10/20 | Active |
+| D-037 | `jsonschema` added as a dev dependency so a contract test validates emitted messages against protocol.md's schema directly | 10/20 | Active |
 
 ## Log
 
@@ -296,3 +301,44 @@ Closes #4.
 
 **Open / follow-up:** #5 uses `ids.ensure_ids()` / `ids.get_id()` to track objects by ID
 instead of by name when turning depsgraph updates into operations.
+
+### 2026-10-20 · Detect local transform changes (#5)
+
+Rewrote `addon/collaborative_blender/detect.py` per the design in the issue: handlers that
+only set a dirty flag, and a 50 ms timer that diffs the whole scene against a cache and
+turns changed properties into `set` operations. Added a Start / Stop detection dev-aid
+button to the panel. Refs #5 — the issue stays open until the manual checks below are done.
+
+| Decision | Why |
+|---|---|
+| D-033: `depsgraph_update_post` / `undo_post` / `redo_post` only set a dirty flag; `flush()` (plain function, run by a `bpy.app.timers` tick every 50 ms) does `ids.ensure_ids()` then diffs every object against a cache keyed by `collab_id` | One mechanism covers drags, N-panel edits, renames, undo/redo and new objects, since nothing holds object references across undo (builds on D-018 to D-021). Cached values are plain Python tuples, never live `Vector`/`Euler` objects, so comparing an unchanged property is exact, not approximate — Blender hands back the same floats it was given. |
+| D-034: A new object's first appearance enters the cache with no emitted op; a deleted object's ID silently drops out when the cache is rebuilt | There's no `create` or `delete` operation yet (#15 needs mesh data), so sending `set` for an object the other client has never heard of would be meaningless. The cache is rebuilt from a fresh scan each flush, so a removed object simply isn't in the new cache — no explicit delete-handling code needed. |
+| D-035: `suppressed()` refreshes the cache from the scene on exit, without emitting | Hook for #6: applying a remote operation must not get diffed back out on the next flush as if it were a local edit. Refreshing the cache (rather than, say, pausing the dirty flag) means the suppressed change is simply the new baseline afterwards. |
+| D-036: A Start / Stop detection button in the panel logs each batch as JSON via `log()` | Lets this be tested by hand (and watched in two side-by-side Blenders) before Join room (#13) exists to start detection for real. |
+| D-037: `jsonschema` added to `addon/requirements-dev.txt`, installed with `uv pip install` (the venv has no `pip`) | A contract test validates every emitted message against the JSON Schema in `docs/protocol.md` directly, the same guarantee the server side gets from Pydantic (D-029), without needing the schema reimplemented by hand. |
+
+**Details:**
+- `_read_object(obj)` returns `{"location", "rotation", "scale", "name"}`; `_read_rotation`
+  reads `rotation_euler`, `rotation_quaternion` or `rotation_axis_angle` according to
+  `obj.rotation_mode`, matching D-023's `{"mode", "values"}` shape exactly.
+- The client Lamport counter and `origin` (D-025) are module state: `origin` is a fresh
+  `uuid.uuid4()` each `start()`, `lamport` resets to 0 and then increases by 1 per operation
+  (not per batch), so two ops in the same flush still get distinct, ordered timestamps.
+- `start()` / `stop()` are idempotent (handler and timer registration is guarded by a
+  membership / `is_registered` check, and a module-level `_active` flag), so calling either
+  twice in a row is harmless. Handlers and the timer are `persistent=True`, matching the old
+  spike handler, so detection survives opening a different `.blend` file mid-session.
+- 25 tests in `addon/tests/test_detect.py`: every checklist scenario (single move, no-op
+  write, coalesced moves, all three rotation shapes, scale, rename, custom-property no-op,
+  new object then a later move, delete, `suppressed()`, Lamport/origin, double `start()`,
+  `stop()`), plus a contract test that loads the JSON Schema straight out of
+  `docs/protocol.md` (same `_json_blocks()`-style regex as `server/tests/sync/`) and runs
+  `jsonschema.validate` on messages from every operation shape.
+- Measured scan cost from the issue (0.2 ms / 100 objects, 3.2 ms / 1,000) wasn't
+  re-measured here; the design already accounted for it.
+
+**Open / follow-up:** two manual checks are still open before #5 can close — see the message
+to Lucas for exactly what to do. Spike-notes' quaternion-rotation item is covered headlessly
+by `test_rotation_set_as_quaternion` but stays open until confirmed with a real Rotation Mode
+change in the UI. Next: #6 applying remote operations (uses `suppressed()`), #8/#9 on the
+server side.

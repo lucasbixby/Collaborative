@@ -7,3 +7,4 @@ bpy==5.2.2                          # Blender itself as a Python module, for hea
 fake-bpy-module-5.2==20260730       # Type stubs only (bpy-stubs): VS Code autocomplete and type checks
 pytest>=8.2
 ruff>=0.5
+jsonschema>=4.23                    # Validates emitted ops messages against docs/protocol.md (#5)

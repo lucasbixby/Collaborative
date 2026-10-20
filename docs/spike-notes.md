@@ -37,6 +37,13 @@ renaming reports the object with no flags; adding an object reports its collecti
   panel (e.g. Vertices 32 → 8). Does it look like a geometry change on the same object, or a
   delete and re-create with the same name?
 - **Quaternion rotation:** confirm an update fires with Rotation Mode set to Quaternion.
+  `addon/tests/test_detect.py::test_rotation_set_as_quaternion` already exercises the
+  Quaternion → `set rotation` path headlessly (setting `rotation_quaternion` directly); this
+  item stays open until that's confirmed through the real Rotation Mode dropdown in the UI
+  (#5's manual check).
+- **Undo / redo and IDs (moved here from #4):** after Cmd+Z, does an object keep its
+  `collab_id`, and does `session_uid` still order copies after their originals? Manual check,
+  part of #5.
 
 ## Resolved
 
