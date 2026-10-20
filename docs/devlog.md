@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #4 Stable object IDs (design and checklist in the issue) |
-| Next up | #5 Detect local transform changes |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #7 Operation format |
-| Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
+| In progress | #5 Detect local transform changes |
+| Next up | #8 Lamport clock, #9 last-writer-wins |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #7 Operation format |
+| Loose ends | spike checks still open (Adjust Last Operation, quaternion rotation) |
 
 ## Decision index
 
@@ -66,6 +66,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-028 | Claude writes all code, with a 2–3 sentence explanation of each piece | 10/20 | Active |
 | D-029 | Operations parsed with strict Pydantic models; `parse_message` is the single entry point | 10/20 | Active |
 | D-030 | Planning chat manages the project; Claude Code on my Mac implements | 10/20 | Active |
+| D-031 | Object IDs live in the custom property `obj["collab_id"]`, a lowercase uuid4 string | 10/20 | Active |
+| D-032 | Duplicate IDs are resolved by `session_uid`: the lowest keeps the ID, the rest get new ones | 10/20 | Active |
 
 ## Log
 
@@ -264,3 +266,33 @@ lowest `session_uid`) and findings verified in headless Blender 5.2: every copy 
 (Shift+D, Alt+D, `obj.copy()`) copies the ID, renames keep it, and it survives save and
 reopen while `session_uid` doesn't. This answers the duplicate-ID question left open in
 spike-notes.md.
+
+### 2026-10-20 · Stable object IDs (#4)
+
+Added `addon/collaborative_blender/ids.py`: `get_id`, `find_object` and `ensure_ids`, which
+assigns `obj["collab_id"]` to every object in the scene and resolves duplicates. Also fixed
+the loose end from the change-detection spike (`unregister()` now calls `detect.stop()`).
+Closes #4.
+
+| Decision | Why |
+|---|---|
+| D-031: Object IDs live in `obj["collab_id"]`, a lowercase uuid4 string matching the UUID pattern in protocol.md | A custom property copies with the object (Shift+D, Alt+D, `obj.copy()`), survives renames and save/reopen, and setting it fires no depsgraph update — unlike `session_uid`, which is reassigned on every file open and can't be sent over the wire. One spelling (lowercase) keeps IDs comparable as plain strings, matching `operations.py`'s `Uuid` type. |
+| D-032: Duplicate IDs are resolved by `session_uid`: the lowest keeps the shared ID, every other holder gets a new one | Any copy method leaves two objects sharing one ID until `ensure_ids` next runs. Blender always gives a copy a higher `session_uid` than its source, even across undo, so sorting by it reliably picks the original without tracking copy history. |
+
+**Details:**
+- `ensure_ids()` groups scene objects by `collab_id` first (unassigned objects go straight to
+  the "needs an ID" list), then re-tags every object past the first in each group that shares
+  one. It returns exactly the objects that were (re)tagged, so callers can tell what changed.
+- `get_id(obj)` and `find_object(collab_id)` are the read side: a plain property read and a
+  linear scan of `bpy.context.scene.objects` respectively — the scene is small enough that an
+  index isn't worth the bookkeeping yet.
+- Tests in `addon/tests/test_ids.py` cover: assigning IDs to a bare scene, a second call being
+  a no-op, Shift+D / Alt+D / `obj.copy()` giving the copy (not the original) a new ID, rename
+  keeping the ID, save + reopen keeping the ID, and every generated ID matching protocol.md's
+  UUID pattern. Confirms the findings recorded in the issue rather than re-deriving them.
+- `detect.stop()` wasn't wired into `unregister()`; harmless today since nothing calls
+  `detect.start()` yet (that lands with #5), but left unregistering an idempotent handler
+  removal would have been a live bug once it did.
+
+**Open / follow-up:** #5 uses `ids.ensure_ids()` / `ids.get_id()` to track objects by ID
+instead of by name when turning depsgraph updates into operations.

@@ -36,6 +36,11 @@ renaming reports the object with no flags; adding an object reports its collecti
 - **Adjust Last Operation:** after adding an object, change its settings in the bottom-left
   panel (e.g. Vertices 32 → 8). Does it look like a geometry change on the same object, or a
   delete and re-create with the same name?
-- **Duplicates and IDs:** once objects carry `obj["collab_id"]` (#4), check whether Shift+D copies
-  it (it is expected to), and give the copy a new ID.
 - **Quaternion rotation:** confirm an update fires with Rotation Mode set to Quaternion.
+
+## Resolved
+
+- **Duplicates and IDs (#4):** Shift+D, Alt+D and `obj.copy()` all copy `obj["collab_id"]`, so
+  a duplicate briefly shares its ID with the original. `ensure_ids()` in
+  `addon/collaborative_blender/ids.py` resolves this by `session_uid`: the lowest keeps the
+  shared ID, the rest are re-tagged. See D-031/D-032 in devlog.md.
