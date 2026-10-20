@@ -27,9 +27,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #7 Operation format: spec and tests done (branch `issue-7-operations`); `operations.py` next (hand-written) |
 | Next up | #4 Stable object IDs, then #5 Detect local transform changes |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #7 Operation format |
 | Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
 
 ## Decision index
@@ -42,9 +41,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-004 | SQLite in development, Postgres only if time allows | 10/12 | Active |
 | D-005 | Asset storage behind an interface, local disk first | 10/12 | Active |
 | D-006 | Lamport timestamps + last-writer-wins first | 10/12 | Active |
-| D-007 | Sync engine is hand-written; AI for scaffolding and UI | 10/12 | Amended by D-027 |
+| D-007 | Sync engine is hand-written; AI for scaffolding and UI | 10/12 | Replaced by D-028 |
 | D-008 | One repository with server/, addon/, web/, docs/ | 10/15 | Active |
-| D-009 | Sync engine scaffolded as documented empty stubs | 10/15 | Active |
+| D-009 | Sync engine scaffolded as documented empty stubs | 10/15 | Replaced by D-028 |
 | D-010 | Target Blender 5.2 LTS and Python 3.13 | 10/15 | Active |
 | D-011 | Headless add-on tests with the `bpy` module from PyPI | 10/15 | Active |
 | D-012 | Tests enable the add-on through Blender's own loader | 10/15 | Active |
@@ -62,7 +61,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-024 | Operations travel in versioned batches (`{"v": 1, "type": "ops", "ops": [...]}`) | 10/19 | Active |
 | D-025 | Every operation carries its own Lamport timestamp and origin | 10/19 | Active |
 | D-026 | Deletes win over later sets; creates are idempotent | 10/19 | Active |
-| D-027 | Claude may write sync-engine tests from the spec; the implementation stays hand-written | 10/19 | Active |
+| D-027 | Claude may write sync-engine tests from the spec; the implementation stays hand-written | 10/19 | Replaced by D-028 |
+| D-028 | Claude writes all code, with a 2–3 sentence explanation of each piece | 10/20 | Active |
+| D-029 | Operations parsed with strict Pydantic models; `parse_message` is the single entry point | 10/20 | Active |
 
 ## Log
 
@@ -224,3 +225,28 @@ merge with `Closes #7`.
   UUID formats, NaN / Infinity), which are the traps the tests exist to catch.
 
 **Open / follow-up:** write `operations.py` on the branch, run `pytest tests/sync`, merge.
+
+### 2026-10-20 · Claude writes all code; operation format implemented (#7)
+
+Changed how the project is built: Claude now writes all the code, including the sync engine,
+and explains each piece in 2–3 sentences (what it does and why). Then implemented
+`server/app/sync/operations.py`, which passes all 68 tests from the previous entry. Closes #7.
+
+| Decision | Why |
+|---|---|
+| D-028: Claude writes all code, including the sync engine, with a short explanation of each piece; replaces D-007, D-009 and D-027 | My choice, to keep the project moving toward the prototype (10/24) and demo (11/23). The explanations keep me able to explain and defend every part of the code. The course proposal said the sync engine would be hand-written, so this change is recorded here with its date. |
+| D-029: `operations.py` parses messages with strict Pydantic models (`extra="forbid"`, `strict=True`, `allow_inf_nan=False`), chosen by discriminated unions on `kind`, then `property` / `mode` | One model per schema section mirrors `protocol.md` directly. Strict mode is what makes the code reject what the spec rejects; Pydantic's defaults accept `"1.5"` as a number, `true` as an integer, and NaN. `parse_message` checks the 64 KiB limit before parsing and never uses `json.loads`, which accepts NaN. |
+
+**Details:**
+- The `hand-written` label was removed from the issues and deleted; `CLAUDE.md`, the sync
+  READMEs, `architecture.md` and `protocol.md` were updated to match.
+- IDs are plain strings matching the UUID pattern rather than Pydantic's `UUID` type, so each ID
+  has exactly one spelling when compared.
+- Rules the JSON Schema can't express live in validators: face indices in range, names within
+  255 bytes of UTF-8.
+- Each operation exposes `op_id` = (`lamport`, `origin`), the ordering key for #8 and #9.
+- Rejections carry readable reasons (e.g. `ops.0.set.location.lamport: Input should be a valid
+  integer`), useful later for the `error` message (#10).
+
+**Open / follow-up:** #4 stable object IDs and #5 transform detection on the add-on side; #8
+Lamport clock and #9 last-writer-wins on the server side.
