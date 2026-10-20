@@ -27,7 +27,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| Next up | #4 Stable object IDs, then #5 Detect local transform changes |
+| In progress | #4 Stable object IDs (design and checklist in the issue) |
+| Next up | #5 Detect local transform changes |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #7 Operation format |
 | Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
 
@@ -64,6 +65,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-027 | Claude may write sync-engine tests from the spec; the implementation stays hand-written | 10/19 | Replaced by D-028 |
 | D-028 | Claude writes all code, with a 2–3 sentence explanation of each piece | 10/20 | Active |
 | D-029 | Operations parsed with strict Pydantic models; `parse_message` is the single entry point | 10/20 | Active |
+| D-030 | Planning chat manages the project; Claude Code on my Mac implements | 10/20 | Active |
 
 ## Log
 
@@ -250,3 +252,15 @@ and explains each piece in 2–3 sentences (what it does and why). Then implemen
 
 **Open / follow-up:** #4 stable object IDs and #5 transform detection on the add-on side; #8
 Lamport clock and #9 last-writer-wins on the server side.
+
+### 2026-10-20 · New way of working; #4 designed
+
+| Decision | Why |
+|---|---|
+| D-030: The claude.ai chat is the project manager (issues, board, specs, reviews, devlog for planning); Claude Code running in my local repo is the worker that implements | Claude Code works on my files directly and runs commands on my Mac, without the sync and permission problems of editing through the chat. The chat keeps the overview across sessions. `CLAUDE.md` tells the worker to read the issue first, pull before starting, and update the devlog itself. |
+
+Issue #4 now holds the full design (custom property `collab_id`, duplicates resolved by
+lowest `session_uid`) and findings verified in headless Blender 5.2: every copy method
+(Shift+D, Alt+D, `obj.copy()`) copies the ID, renames keep it, and it survives save and
+reopen while `session_uid` doesn't. This answers the duplicate-ID question left open in
+spike-notes.md.
