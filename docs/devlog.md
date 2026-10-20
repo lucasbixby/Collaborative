@@ -27,6 +27,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
+| In progress | #7 Operation format: spec written in `docs/protocol.md`, decisions D-022 to D-026 awaiting review; `operations.py` and tests next (hand-written) |
 | Next up | #4 Stable object IDs, then #5 Detect local transform changes |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike |
 | Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
@@ -56,6 +57,11 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-019 | Coalesce changes and send every ~50 ms | 10/16 | Active |
 | D-020 | Creates, deletes and undo found by a full object-set diff | 10/16 | Active |
 | D-021 | Create operations carry mesh data and the target collection | 10/16 | Active |
+| D-022 | One `set` operation per property: location, rotation, scale, name | 10/19 | Proposed |
+| D-023 | Rotation sent as mode + values in one property | 10/19 | Proposed |
+| D-024 | Operations travel in versioned batches (`{"v": 1, "type": "ops", "ops": [...]}`) | 10/19 | Proposed |
+| D-025 | Every operation carries its own Lamport timestamp and origin | 10/19 | Proposed |
+| D-026 | Deletes win over later sets; creates are idempotent | 10/19 | Proposed |
 
 ## Log
 
@@ -158,3 +164,32 @@ polling isn't needed. Full results in [spike-notes.md](spike-notes.md).
 
 **Open / follow-up:** Adjust Last Operation behaviour, Shift+D copying `collab_id`, quaternion
 rotation (listed in spike-notes.md). Next: #4 stable IDs and #5 transform detection.
+
+### 2026-10-19 · Operation format spec (#7)
+
+Wrote the wire format for operations into [protocol.md](protocol.md): conventions, the `ops`
+batch message, `set` / `create` / `delete` operations, ordering and validation rules, a JSON
+Schema, and example messages. Based on the spike's findings. Claude drafted the spec from the
+spike results at my request; decisions are marked **Proposed** until I've reviewed them.
+`operations.py` and its tests stay hand-written (D-007).
+
+| Decision | Why |
+|---|---|
+| D-022: One `set` per property (`location`, `rotation`, `scale`, `name`) | Last-writer-wins works per (object, property), so if one user moves an object while another rotates it, both changes survive. Rejected: one operation for the whole transform (one edit would overwrite the other); per-component (`location.x`), which adds overhead for no real benefit. |
+| D-023: `rotation` is `{"mode", "values"}`: 3 radians for Euler modes, 4 numbers for quaternion / axis-angle | Blender stores each rotation mode in a different property. Sending mode and values together means they can never be out of sync on the receiver. |
+| D-024: Operations travel in batches inside a versioned envelope | The 50 ms send timer (D-019) produces several operations at once; one message per batch saves overhead. A version number from day one makes later format changes detectable. |
+| D-025: Every operation carries its own `lamport` and `origin` | The server logs, orders and relays operations individually, so each must stand alone. (`lamport`, `origin`) is also unique, so it serves as the operation's ID without a separate field. |
+| D-026: Deletes win (receivers keep tombstones of deleted IDs); duplicate creates are ignored | If one user deletes an object while another is still dragging it, late moves must not bring it back. Ignoring repeated creates makes resending safe. |
+
+**Details:**
+- Checked: the JSON Schema is valid 2020-12; all example messages pass it; 15 kinds of bad
+  message are rejected (wrong vector size, unknown property, extra field, bad rotation mode,
+  Lamport 0, name instead of UUID, ...). Property names, rotation modes and value sizes were
+  checked against Blender 5.2.
+- Rules the schema can't express (face indices in range, 64 KiB size, `origin` matching the
+  connection, name byte length, rejecting NaN) are listed in protocol.md for validation (#10).
+- The example messages in protocol.md parse as JSON, so tests on both sides can load them.
+
+**Open / follow-up:** review D-022 to D-026; then write `operations.py` and
+`server/tests/sync/` tests (hand-written). `join`, `catch_up`, `snapshot` and `error` messages
+are TODO with #11, #20 and #10.
