@@ -73,6 +73,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-035 | `suppressed()` refreshes the cache from the scene on exit, without emitting | 10/20 | Active |
 | D-036 | Start / Stop detection button in the panel logs batches as JSON until Join room (#13) exists | 10/20 | Active |
 | D-037 | `jsonschema` added as a dev dependency so a contract test validates emitted messages against protocol.md's schema directly | 10/20 | Active |
+| D-038 | `suppressed()` flushes pending local edits before its outermost block runs | 10/20 | Active |
 
 ## Log
 
@@ -342,3 +343,25 @@ to Lucas for exactly what to do. Spike-notes' quaternion-rotation item is covere
 by `test_rotation_set_as_quaternion` but stays open until confirmed with a real Rotation Mode
 change in the UI. Next: #6 applying remote operations (uses `suppressed()`), #8/#9 on the
 server side.
+
+### 2026-10-20 · Fix: pending local edits lost on `suppressed()` (#5)
+
+Review comment on 48c11ce: a local edit still waiting for its 50 ms tick was being silently
+absorbed into the cache when a remote operation was applied inside `suppressed()`, instead
+of being sent. Added the repro from the comment as a test, confirmed it failed, then fixed
+it. Refs #5.
+
+| Decision | Why |
+|---|---|
+| D-038: Entering the outermost `suppressed()` calls `flush()` first (only if `_dirty`) | A dirty-but-unflushed local change and a remote operation applied inside the block both end up as one new cache baseline on exit; flushing first makes sure the local change goes out before that happens, instead of being overwritten by it. |
+
+**Details:**
+- `test_suppressed_flushes_pending_local_edits_first` in `addon/tests/test_detect.py`
+  reproduces the comment's scenario (object A moved locally, not yet flushed; object B's
+  "remote" move applied inside `suppressed()`) and checks A's move was sent and B's wasn't.
+- Nested `suppressed()` calls still only flush on the outermost entry (guarded by
+  `_suppress_depth == 0`, the same check already used on exit), so #6 applying several
+  operations in a row doesn't flush between each one.
+
+**Open / follow-up:** D-025's Lamport counter resetting to 0 in `start()` is a separate,
+already-noted issue for #8, not fixed here.

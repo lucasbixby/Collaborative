@@ -186,10 +186,16 @@ def is_active() -> bool:
 def suppressed():
     """Ignore changes made inside the block (used while applying a remote operation, #6).
 
+    Entering the outermost `suppressed()` flushes first: a local edit still waiting for
+    its 50 ms tick must be sent before a remote operation is applied, or it would be
+    absorbed into the cache on exit and never sent at all.
+
     On exit the cache is refreshed from the scene without emitting anything, so a change
     applied here is never diffed back out on the next flush as if it were a local edit.
     """
     global _suppress_depth, _cache, _dirty
+    if _suppress_depth == 0:
+        flush()
     _suppress_depth += 1
     try:
         yield

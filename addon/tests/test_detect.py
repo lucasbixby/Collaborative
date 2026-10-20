@@ -201,6 +201,27 @@ def test_deleted_object_leaves_the_cache_without_errors(sent):
     assert detect.flush() is None  # no `delete` op (out of scope, #15); just drops silently
 
 
+def test_suppressed_flushes_pending_local_edits_first(sent):
+    # Bug from the #5 review: a local edit still waiting for its 50 ms tick must not be
+    # absorbed into the cache (and lost) by a remote operation applied inside suppressed().
+    a = _add_cube("A")
+    b = _add_cube("B")
+    _settle()
+    detect.flush()  # both enter the cache silently
+
+    a.location = (5.0, 0.0, 0.0)
+    _settle()
+    with detect.suppressed():
+        b.location = (0.0, 7.0, 0.0)
+        _settle()
+
+    assert detect.flush() is None  # B's change was absorbed silently, as designed
+    assert len(sent) == 1
+    op = _only_op(sent[0], "location")
+    assert op["object"] == ids.get_id(a)
+    assert op["value"] == [5.0, 0.0, 0.0]
+
+
 def test_changes_inside_suppressed_emit_nothing(sent):
     obj = _add_cube()
     _settle()
