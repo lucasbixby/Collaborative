@@ -193,3 +193,10 @@ spike results at my request; decisions are marked **Proposed** until I've review
 **Open / follow-up:** D-022 to D-026 reviewed and accepted (10/19). Next: write `operations.py` and
 `server/tests/sync/` tests (hand-written). `join`, `catch_up`, `snapshot` and `error` messages
 are TODO with #11, #20 and #10.
+
+**Future work:** discussed locking objects so only one person edits them at a time (pessimistic
+concurrency). Selection-based locks were rejected: people select constantly, and Select All
+would lock the whole scene. The design that fits is a hard lock while someone is in Edit Mode on
+a mesh, where conflicting edits can't be merged, plus soft "selected by" indicators. The server
+acts as lock manager with try-lock (no waiting, so no deadlock), releasing on exit, disconnect
+or lease timeout. Recorded as stretch issue #30, to ship with mesh sync (#26).
