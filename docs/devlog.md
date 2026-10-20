@@ -277,7 +277,7 @@ Closes #4.
 | Decision | Why |
 |---|---|
 | D-031: Object IDs live in `obj["collab_id"]`, a lowercase uuid4 string matching the UUID pattern in protocol.md | A custom property copies with the object (Shift+D, Alt+D, `obj.copy()`), survives renames and save/reopen, and setting it fires no depsgraph update — unlike `session_uid`, which is reassigned on every file open and can't be sent over the wire. One spelling (lowercase) keeps IDs comparable as plain strings, matching `operations.py`'s `Uuid` type. |
-| D-032: Duplicate IDs are resolved by `session_uid`: the lowest keeps the shared ID, every other holder gets a new one | Any copy method leaves two objects sharing one ID until `ensure_ids` next runs. Blender always gives a copy a higher `session_uid` than its source, even across undo, so sorting by it reliably picks the original without tracking copy history. |
+| D-032: Duplicate IDs are resolved by `session_uid`: the lowest keeps the shared ID, every other holder gets a new one | Any copy method leaves two objects sharing one ID until `ensure_ids` next runs. Blender always gives a copy a higher `session_uid` than its source (verified for Shift+D, Alt+D and `obj.copy()`), so sorting by it picks the original without tracking copy history. Behaviour across undo is not verified yet; that check moved to #5. |
 
 **Details:**
 - `ensure_ids()` groups scene objects by `collab_id` first (unassigned objects go straight to
