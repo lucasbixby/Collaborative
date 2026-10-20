@@ -1,6 +1,10 @@
 # Sync engine tests
 
-Hand-written alongside `app/sync/`. Planned files:
+Tests for `app/sync/`, written from `docs/protocol.md`.
+
+- `test_operations.py` — the operation format (#7): examples parse, round trip, rejections
+
+Planned:
 
 - `test_clock.py` — tick, merge, tie-breaking by origin ID
 - `test_validation.py` — malformed, oversized, and disallowed operations are rejected

@@ -2,7 +2,7 @@
 
 The contract between the Blender add-on and the server. The add-on builds these messages as
 plain dictionaries, and the server parses them with the models in
-`server/app/sync/operations.py` (hand-written, #7). Both sides follow this document; when they
+`server/app/sync/operations.py` (#7). Both sides follow this document; when they
 disagree, this document is right and the code is fixed.
 
 **Version 1** · status: operation messages specified; other message types are TODO.

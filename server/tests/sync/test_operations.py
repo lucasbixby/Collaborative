@@ -1,7 +1,6 @@
 """Tests for the operation format (#7), written from docs/protocol.md.
 
-These tests are the contract for `app/sync/operations.py`, which is hand-written (D-007,
-amended by D-027). It must provide:
+These tests are the contract for `app/sync/operations.py`. It must provide:
 
     parse_message(raw: str | bytes) -> message
         Parse one `ops` message. Raise ValueError (pydantic's ValidationError is one) for

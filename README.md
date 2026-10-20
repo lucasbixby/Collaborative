@@ -15,12 +15,12 @@ server/                FastAPI server (runs in Docker)
   app/
     api/               REST: accounts, rooms and invites, snapshots and history
     realtime/          WebSocket relay and room connections
-    sync/              Sync engine: operations, Lamport clock, LWW, validation, log  (hand-written)
+    sync/              Sync engine: operations, Lamport clock, LWW, validation, log
     auth/              Tokens and per-room permissions
     db/                Models and sessions (SQLite now, Postgres later)
     storage/           Asset store interface + local-disk implementation
   tests/
-    sync/              Sync engine tests (hand-written)
+    sync/              Sync engine tests
 web/                   React + TypeScript UI (Vite): sign-in, rooms, connection status
 docker-compose.yml     One command to run the server
 ```
