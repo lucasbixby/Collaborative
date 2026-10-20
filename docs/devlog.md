@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #8 Lamport clock, #9 last-writer-wins |
+| In progress | #11 WebSocket relay (implementation done; manual check open), #8 Lamport clock, #9 last-writer-wins |
 | Next up | #6 Apply remote operations |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #7 Operation format |
-| Loose ends | Adjust Last Operation spike item |
+| Loose ends | #11's manual check (two probes, one in another room); Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -74,6 +74,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-036 | Start / Stop detection button in the panel logs batches as JSON until Join room (#13) exists | 10/20 | Active |
 | D-037 | `jsonschema` added as a dev dependency so a contract test validates emitted messages against protocol.md's schema directly | 10/20 | Active |
 | D-038 | `suppressed()` flushes pending local edits before its outermost block runs | 10/20 | Active |
+| D-039 | Rooms are implicit and in-memory: created on first join, removed on last leave | 10/20 | Active |
+| D-040 | An invalid message gets an `error` reply to the sender only; the connection stays open | 10/20 | Active |
+| D-041 | Server tests share one `TestClient` portal (`with TestClient(...)`) instead of one per websocket connection | 10/20 | Active |
 
 ## Log
 
@@ -373,3 +376,42 @@ Closes #5.
 
 **Open / follow-up:** D-025's Lamport counter resetting to 0 in `start()` is a separate,
 already-noted issue for #8, not fixed here. Next: #6 applying remote operations.
+
+### 2026-10-20 · WebSocket relay: rooms and broadcast (#11)
+
+Built the relay: `ConnectionManager` (`realtime/connections.py`) tracks room membership
+and broadcasts; `realtime/websocket.py` is the `/ws/rooms/{room_id}` endpoint, reusing
+`parse_message` / `serialize_message` from #7. Added the `error` message and the
+forwarding rule to `docs/protocol.md`, and `scripts/ws_probe.py` for testing by hand.
+Refs #11 — the issue stays open until the manual check below is done.
+
+| Decision | Why |
+|---|---|
+| D-039: Rooms are implicit and in-memory — created on the first `join`, removed on the last `leave`; `room_id` must match `^[A-Za-z0-9_-]{1,64}$` or the socket is closed (code 1008) before it's accepted | Matches the minimal prototype scope (#18, real room creation/persistence, is separate). Validating and closing before `accept()` lets a bad `room_id` surface to the client as a failed connection rather than an accepted one that's immediately useless. |
+| D-040: An invalid message gets `{"v": 1, "type": "error", "message": "<reason>"}` back on the same connection, which stays open | One bad batch (bad schema, oversized, a stray non-JSON frame) shouldn't cost a client its connection; `parse_message`'s `ValueError` text is reused directly as the reason, so rejections stay specific without a second place to maintain reasons. |
+| D-041: Server tests use `with TestClient(create_app()) as client:` (conftest.py), not a bare `TestClient(...)` | A bare `TestClient` gives each `websocket_connect()` call its own `BlockingPortal` (own thread, own event loop); broadcasting between sockets owned by different event loops deadlocked intermittently (~10% of runs, only with 3+ simultaneous connections — reproduced in a minimal FastAPI app with no code of ours involved). Entering the context manager once gives every connection from that client the same portal. Known Starlette behaviour, not a bug in the relay. |
+
+**Details:**
+- `ConnectionManager.join` / `leave` / `broadcast` only touch a `dict[str, set[WebSocket]]`;
+  `leave` deletes the room once its set is empty. `broadcast` iterates a copy of the set
+  (sending can mutate it), excludes the sender (which already applied its own change
+  locally, docs/protocol.md rule 8), and drops any socket a send fails on — its own receive
+  loop separately notices the disconnect and calls `leave`.
+- 8 tests in `server/tests/realtime/test_websocket.py` using `TestClient.websocket_connect`:
+  since there's no clean "received nothing" timeout, absence is proved by ordering — e.g.
+  to show a client never gets its own message back, a second client sends a second message
+  and the test checks *that* arrives first. Each test uses a fresh `uuid4` room id (a `room`
+  fixture), so no test can interact with another's sockets even in principle.
+- `scripts/ws_probe.py` connects to one room and, on each Enter press, sends the next
+  example `ops` message from `docs/protocol.md` (parsed with the same regex trick used in
+  `server/tests/sync/` and `addon/tests/test_detect.py`), printing everything it receives.
+  Needs the `websockets` package (added to `requirements-dev.txt`; otherwise only an
+  indirect `uvicorn[standard]` dependency).
+- Verified end-to-end against a real running `uvicorn` server (not just `TestClient`): two
+  real `websockets` clients in one room relay correctly, a third in another room gets
+  nothing, and a garbage frame gets an `error` without breaking the connection.
+
+**Open / follow-up:** manual check (two probes in one room, one in another) is still open —
+see the message to Lucas for the exact commands. `origin` still isn't checked against the
+connection that sent it (protocol.md rule 4's last clause); that's auth-shaped work for
+#16 / #17, not #11.

@@ -5,7 +5,7 @@ plain dictionaries, and the server parses them with the models in
 `server/app/sync/operations.py` (#7). Both sides follow this document; when they
 disagree, this document is right and the code is fixed.
 
-**Version 1** · status: operation messages specified; other message types are TODO.
+**Version 1** · status: `ops` and `error` specified; `join`, `catch_up` and `snapshot` TODO.
 Design decisions D-022 to D-026 in [devlog.md](devlog.md), based on the change-detection spike
 ([spike-notes.md](spike-notes.md)).
 
@@ -27,10 +27,10 @@ Every message is an object with a protocol version `v` and a `type`.
 | `type` | Direction | Purpose | Status |
 |---|---|---|---|
 | `ops` | add-on → server → other add-ons | A batch of operations | **Specified below** |
-| `join` | add-on → server | Introduce the client (origin ID, last Lamport seen) | TODO with #11 |
+| `join` | add-on → server | Introduce the client (origin ID, last Lamport seen) | TODO with #16 / #20 |
 | `catch_up` | add-on → server | Ask for operations missed while disconnected | TODO with #20 |
 | `snapshot` | server → add-on | Full room state for a client that is too far behind | TODO with #20 |
-| `error` | server → add-on | A message was rejected, and why | TODO with #10 |
+| `error` | server → add-on | A message was rejected, and why | **Specified below** |
 
 ### `ops`: a batch of operations
 
@@ -51,7 +51,28 @@ always travel in a batch, applied in list order.
 | `type` | `"ops"` | Message type |
 | `ops` | array of operations, at least one | The changes, oldest first |
 
-The server forwards a batch to the other clients in the room unchanged.
+The server forwards a batch to every other client in the room, unchanged except for being
+re-serialized from the parsed, validated message rather than the raw text (#11).
+
+### `error`: a message was rejected
+
+Sent to the sender only, in reply to one message that failed validation — bad schema,
+unknown field, oversized, or any other rule under [Rules](#rules) below. The connection
+stays open: one bad message doesn't disconnect a client.
+
+```json
+{
+  "v": 1,
+  "type": "error",
+  "message": "ops.0.set.location.lamport: Input should be a valid integer"
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `v` | `1` | Protocol version |
+| `type` | `"error"` | Message type |
+| `message` | string | Human-readable reason, for logs and debugging. Not meant to be parsed |
 
 ## Operations
 
@@ -140,6 +161,10 @@ Only the common fields.
    carrying the latest value (D-019).
 7. **Undo and redo are not special.** The add-on compares the scene with its cache after undo or
    redo (D-020) and sends whatever differs as ordinary operations.
+8. **The relay forwards to everyone except the sender (#11).** A valid `ops` message goes to
+   every other client currently in the room — never back to the sender, which has already
+   applied its own change locally. An invalid message gets an `error` reply instead, to the
+   sender only, and the connection stays open.
 
 ## Not synced yet
 
@@ -380,4 +405,9 @@ Deleting it:
 
 `ws://<host>:8000/ws/rooms/{room_id}`, with the auth token sent on connect.
 
-_TODO with #11 and #20: handshake (`join`), reconnect and catch-up sequence._
+`room_id` must match `^[A-Za-z0-9_-]{1,64}$`; the server closes the connection with code
+`1008` otherwise. The room exists only while at least one client is in it: it's created on
+the first `join` and removed on the last `leave` (#11). No auth yet (TODO #16 / #17): any
+client may join any room.
+
+_TODO with #16 / #20: handshake (`join`), reconnect and catch-up sequence._
