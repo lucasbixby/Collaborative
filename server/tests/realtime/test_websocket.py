@@ -9,6 +9,7 @@ arrived first.
 
 import copy
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -148,8 +149,17 @@ def test_disconnect_leaves_others_working_and_empties_the_room(client, room):
 
 
 def test_bad_room_id_is_refused(client):
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with _ws(client, "bad room!"):
-            pass
+    with pytest.raises(WebSocketDisconnect) as exc_info, _ws(client, "bad room!"):
+        pass
 
     assert exc_info.value.code == 1008
+
+
+def test_connect_is_logged(client, room, caplog):
+    room_id = room()
+    caplog.set_level(logging.INFO, logger="app.realtime.websocket")
+
+    with _ws(client, room_id):
+        pass
+
+    assert f"connect room={room_id} clients=1" in caplog.text

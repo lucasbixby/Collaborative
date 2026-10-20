@@ -48,5 +48,5 @@ class ConnectionManager:
                 continue
             try:
                 await socket.send_text(text)
-            except Exception:
+            except Exception:  # noqa: BLE001 - any failed send means this client is gone
                 room.discard(socket)

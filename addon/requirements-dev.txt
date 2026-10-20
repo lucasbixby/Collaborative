@@ -6,5 +6,5 @@
 bpy==5.2.2                          # Blender itself as a Python module, for headless tests
 fake-bpy-module-5.2==20260730       # Type stubs only (bpy-stubs): VS Code autocomplete and type checks
 pytest>=8.2
-ruff>=0.5
+ruff==0.17.1                        # pinned: an older local ruff missed rules CI's version catches (#11)
 jsonschema>=4.23                    # Validates emitted ops messages against docs/protocol.md (#5)

@@ -77,6 +77,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-039 | Rooms are implicit and in-memory: created on first join, removed on last leave | 10/20 | Active |
 | D-040 | An invalid message gets an `error` reply to the sender only; the connection stays open | 10/20 | Active |
 | D-041 | Server tests share one `TestClient` portal (`with TestClient(...)`) instead of one per websocket connection | 10/20 | Active |
+| D-042 | `ruff` pinned to 0.17.1 in both `server/pyproject.toml` and `addon/requirements-dev.txt` | 10/20 | Active |
+| D-043 | `create_app()` configures logging for the `app` logger namespace at startup | 10/20 | Active |
 
 ## Log
 
@@ -415,3 +417,25 @@ Refs #11 — the issue stays open until the manual check below is done.
 see the message to Lucas for the exact commands. `origin` still isn't checked against the
 connection that sent it (protocol.md rule 4's last clause); that's auth-shaped work for
 #16 / #17, not #11.
+
+### 2026-10-20 · Fix: ruff findings, pin ruff, relay logs weren't showing (#11)
+
+Two review findings on 4884c8d. `ruff check` failed in CI because the local `ruff`
+(0.15.12) was older than CI's and missed two rules; and the relay's own log lines never
+showed up in the server terminal. Refs #11.
+
+| Decision | Why |
+|---|---|
+| D-042: `ruff` pinned to `0.17.1` in `server/pyproject.toml` and `addon/requirements-dev.txt`, both venvs reinstalled | So local and CI always run the same rule set; an unpinned `ruff>=0.5` let them silently drift apart. |
+| D-043: `create_app()` calls `_configure_logging()`, which gives the `app` logger an INFO-level `StreamHandler` | Uvicorn configures its own loggers but not ours; with no handler in our hierarchy, the root logger's handler of last resort only prints WARNING and above, so `logger.info(...)` in `websocket.py` was silently dropped. Scoped to the `app` namespace, not `logging.basicConfig()` globally, so it doesn't also turn on INFO logging for dependencies. Guarded (`if not app_logger.handlers`) since tests call `create_app()` fresh every time. |
+
+**Details:**
+- `connections.py`: `except Exception:  # noqa: BLE001` with a short comment — catching
+  everything is intentional (any failed send means the client is gone), so suppressed
+  rather than changed.
+- `tests/realtime/test_websocket.py`: the one `SIM117` nested-`with` combined (ruff's own
+  `--fix`); new `test_connect_is_logged` uses `caplog.set_level(logging.INFO, ...)` and
+  checks the connect line's text. 78 server tests pass; `ruff check .` clean in both
+  `server/` and `addon/` at the pinned version.
+- Verified the fix against a real running `uvicorn` server too: `connect room=... clients=1`
+  / `disconnect ...` now print in the terminal, not just under `caplog`.
