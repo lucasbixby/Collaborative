@@ -27,7 +27,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #7 Operation format: spec written in `docs/protocol.md`, decisions D-022 to D-026 accepted; `operations.py` and tests next (hand-written) |
+| In progress | #7 Operation format: spec and tests done (branch `issue-7-operations`); `operations.py` next (hand-written) |
 | Next up | #4 Stable object IDs, then #5 Detect local transform changes |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike |
 | Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
@@ -42,7 +42,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-004 | SQLite in development, Postgres only if time allows | 10/12 | Active |
 | D-005 | Asset storage behind an interface, local disk first | 10/12 | Active |
 | D-006 | Lamport timestamps + last-writer-wins first | 10/12 | Active |
-| D-007 | Sync engine is hand-written; AI for scaffolding and UI | 10/12 | Active |
+| D-007 | Sync engine is hand-written; AI for scaffolding and UI | 10/12 | Amended by D-027 |
 | D-008 | One repository with server/, addon/, web/, docs/ | 10/15 | Active |
 | D-009 | Sync engine scaffolded as documented empty stubs | 10/15 | Active |
 | D-010 | Target Blender 5.2 LTS and Python 3.13 | 10/15 | Active |
@@ -62,6 +62,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-024 | Operations travel in versioned batches (`{"v": 1, "type": "ops", "ops": [...]}`) | 10/19 | Active |
 | D-025 | Every operation carries its own Lamport timestamp and origin | 10/19 | Active |
 | D-026 | Deletes win over later sets; creates are idempotent | 10/19 | Active |
+| D-027 | Claude may write sync-engine tests from the spec; the implementation stays hand-written | 10/19 | Active |
 
 ## Log
 
@@ -200,3 +201,26 @@ would lock the whole scene. The design that fits is a hard lock while someone is
 a mesh, where conflicting edits can't be merged, plus soft "selected by" indicators. The server
 acts as lock manager with try-lock (no waiting, so no deadlock), releasing on exit, disconnect
 or lease timeout. Recorded as stretch issue #30, to ship with mesh sync (#26).
+
+### 2026-10-19 · Tests for the operation format (#7)
+
+Claude wrote `server/tests/sync/test_operations.py` from `docs/protocol.md`, at my request, on
+branch `issue-7-operations`. I write `server/app/sync/operations.py` to make them pass, then
+merge with `Closes #7`.
+
+| Decision | Why |
+|---|---|
+| D-027: Claude may write tests for the sync engine from the spec; the implementation stays hand-written (amends D-007) | The tests restate `protocol.md` as checks, so they hold no design of their own; the design is in the spec I approved. Writing the code that passes them is where the understanding comes from, and that stays mine. |
+| Tests go on a branch until `operations.py` passes them | They fail until the implementation exists; keeping them off `main` keeps CI green. |
+
+**Details:**
+- The tests define the interface: `parse_message(raw)` raises `ValueError` for anything the
+  spec rejects (including messages over 64 KiB); `serialize_message(message)` returns JSON text.
+- 68 tests: every example message in protocol.md parses (they are read from the file itself);
+  round trip; 36 rejections (wrong sizes, unknown fields, Lamport `0` / `1.5` / `true`, bad
+  UUIDs, NaN, Infinity, name byte length, face indices, oversize); 13 valid variations.
+- Checked against throwaway implementations that were never committed: a correct one passes
+  all 68; one with Pydantic's default settings fails 8 (strings as numbers, `true` as an int,
+  UUID formats, NaN / Infinity), which are the traps the tests exist to catch.
+
+**Open / follow-up:** write `operations.py` on the branch, run `pytest tests/sync`, merge.
