@@ -27,7 +27,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #7 Operation format: spec written in `docs/protocol.md`, decisions D-022 to D-026 awaiting review; `operations.py` and tests next (hand-written) |
+| In progress | #7 Operation format: spec written in `docs/protocol.md`, decisions D-022 to D-026 accepted; `operations.py` and tests next (hand-written) |
 | Next up | #4 Stable object IDs, then #5 Detect local transform changes |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike |
 | Loose ends | `unregister()` doesn't call `detect.stop()` yet; spike checks still open (Adjust Last Operation, quaternion rotation) |
@@ -57,11 +57,11 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-019 | Coalesce changes and send every ~50 ms | 10/16 | Active |
 | D-020 | Creates, deletes and undo found by a full object-set diff | 10/16 | Active |
 | D-021 | Create operations carry mesh data and the target collection | 10/16 | Active |
-| D-022 | One `set` operation per property: location, rotation, scale, name | 10/19 | Proposed |
-| D-023 | Rotation sent as mode + values in one property | 10/19 | Proposed |
-| D-024 | Operations travel in versioned batches (`{"v": 1, "type": "ops", "ops": [...]}`) | 10/19 | Proposed |
-| D-025 | Every operation carries its own Lamport timestamp and origin | 10/19 | Proposed |
-| D-026 | Deletes win over later sets; creates are idempotent | 10/19 | Proposed |
+| D-022 | One `set` operation per property: location, rotation, scale, name | 10/19 | Active |
+| D-023 | Rotation sent as mode + values in one property | 10/19 | Active |
+| D-024 | Operations travel in versioned batches (`{"v": 1, "type": "ops", "ops": [...]}`) | 10/19 | Active |
+| D-025 | Every operation carries its own Lamport timestamp and origin | 10/19 | Active |
+| D-026 | Deletes win over later sets; creates are idempotent | 10/19 | Active |
 
 ## Log
 
@@ -190,6 +190,6 @@ spike results at my request; decisions are marked **Proposed** until I've review
   connection, name byte length, rejecting NaN) are listed in protocol.md for validation (#10).
 - The example messages in protocol.md parse as JSON, so tests on both sides can load them.
 
-**Open / follow-up:** review D-022 to D-026; then write `operations.py` and
+**Open / follow-up:** D-022 to D-026 reviewed and accepted (10/19). Next: write `operations.py` and
 `server/tests/sync/` tests (hand-written). `join`, `catch_up`, `snapshot` and `error` messages
 are TODO with #11, #20 and #10.
