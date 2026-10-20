@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #5 Detect local transform changes (implementation done; manual checks open) |
-| Next up | #8 Lamport clock, #9 last-writer-wins |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #7 Operation format |
-| Loose ends | #5's manual checks (undo/redo, drag/N-panel/quaternion); Adjust Last Operation spike item |
+| In progress | #8 Lamport clock, #9 last-writer-wins |
+| Next up | #6 Apply remote operations |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #7 Operation format |
+| Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -344,12 +344,13 @@ by `test_rotation_set_as_quaternion` but stays open until confirmed with a real 
 change in the UI. Next: #6 applying remote operations (uses `suppressed()`), #8/#9 on the
 server side.
 
-### 2026-10-20 · Fix: pending local edits lost on `suppressed()` (#5)
+### 2026-10-20 · Fix: pending local edits lost on `suppressed()`; #5 done
 
 Review comment on 48c11ce: a local edit still waiting for its 50 ms tick was being silently
 absorbed into the cache when a remote operation was applied inside `suppressed()`, instead
 of being sent. Added the repro from the comment as a test, confirmed it failed, then fixed
-it. Refs #5.
+it. Then ran the two manual checks left open on #5, in Blender 5.2 on 10/20 — both passed.
+Closes #5.
 
 | Decision | Why |
 |---|---|
@@ -362,6 +363,13 @@ it. Refs #5.
 - Nested `suppressed()` calls still only flush on the outermost entry (guarded by
   `_suppress_depth == 0`, the same check already used on exit), so #6 applying several
   operations in a row doesn't flush between each one.
+- **Manual check, drag / N-panel / quaternion:** orbiting and selecting send nothing;
+  dragging sends ~20 batches/second (matches the 50 ms tick); N-panel edits, rotation
+  (Euler and Quaternion via the Rotation Mode dropdown), scale and rename each produce the
+  right `set` op.
+- **Manual check, undo / redo:** undo and redo produce ops back and forth; an object keeps
+  its `collab_id` across undo; a Shift+D copy gets a new ID while the original keeps its
+  own, including after undo and redo. Moves the matching spike-notes.md items to Resolved.
 
 **Open / follow-up:** D-025's Lamport counter resetting to 0 in `start()` is a separate,
-already-noted issue for #8, not fixed here.
+already-noted issue for #8, not fixed here. Next: #6 applying remote operations.

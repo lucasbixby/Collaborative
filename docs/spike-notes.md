@@ -36,14 +36,6 @@ renaming reports the object with no flags; adding an object reports its collecti
 - **Adjust Last Operation:** after adding an object, change its settings in the bottom-left
   panel (e.g. Vertices 32 → 8). Does it look like a geometry change on the same object, or a
   delete and re-create with the same name?
-- **Quaternion rotation:** confirm an update fires with Rotation Mode set to Quaternion.
-  `addon/tests/test_detect.py::test_rotation_set_as_quaternion` already exercises the
-  Quaternion → `set rotation` path headlessly (setting `rotation_quaternion` directly); this
-  item stays open until that's confirmed through the real Rotation Mode dropdown in the UI
-  (#5's manual check).
-- **Undo / redo and IDs (moved here from #4):** after Cmd+Z, does an object keep its
-  `collab_id`, and does `session_uid` still order copies after their originals? Manual check,
-  part of #5.
 
 ## Resolved
 
@@ -51,3 +43,9 @@ renaming reports the object with no flags; adding an object reports its collecti
   a duplicate briefly shares its ID with the original. `ensure_ids()` in
   `addon/collaborative_blender/ids.py` resolves this by `session_uid`: the lowest keeps the
   shared ID, the rest are re-tagged. See D-031/D-032 in devlog.md.
+- **Quaternion rotation (#5):** confirmed by hand in Blender 5.2 (10/20) — switching Rotation
+  Mode to Quaternion via the dropdown and rotating produces a correct `set rotation` op
+  (`"mode": "QUATERNION"`), matching `test_rotation_set_as_quaternion`.
+- **Undo / redo and IDs (moved here from #4, closed by #5):** confirmed by hand in Blender
+  5.2 (10/20) — an object keeps its `collab_id` across undo and redo, and a Shift+D copy
+  still gets a new ID (keeping the original's) after undo and redo too.
