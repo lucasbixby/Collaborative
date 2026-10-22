@@ -182,6 +182,12 @@ def is_active() -> bool:
     return _active
 
 
+def origin() -> str | None:
+    """This client's own `origin` UUID (None if detection hasn't started). Lets apply.py
+    (#6) defensively skip an incoming operation that is somehow this client's own."""
+    return _origin
+
+
 @contextmanager
 def suppressed():
     """Ignore changes made inside the block (used while applying a remote operation, #6).

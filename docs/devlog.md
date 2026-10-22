@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #11 WebSocket relay (implementation done; manual check open), #8 Lamport clock, #9 last-writer-wins |
-| Next up | #6 Apply remote operations |
+| In progress | #11 WebSocket relay (implementation done; manual check open), #6 Apply remote operations (implementation done; manual check open), #8 Lamport clock, #9 last-writer-wins |
+| Next up | #12 WebSocket client (connects #5/#6 to the relay) |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #7 Operation format |
-| Loose ends | #11's manual check (two probes, one in another room); Adjust Last Operation spike item |
+| Loose ends | #11's manual check (two probes, one in another room); #6's manual check (two Blenders, same `.blend`); Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -79,6 +79,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-041 | Server tests share one `TestClient` portal (`with TestClient(...)`) instead of one per websocket connection | 10/20 | Active |
 | D-042 | `ruff` pinned to 0.17.1 in both `server/pyproject.toml` and `addon/requirements-dev.txt` | 10/20 | Active |
 | D-043 | `create_app()` configures logging for the `app` logger namespace at startup | 10/20 | Active |
+| D-044 | `apply_message` runs its whole batch inside one `detect.suppressed()` block, with objects looked up once per batch | 10/21 | Active |
+| D-045 | Until #20, both clients must open the same saved `.blend` so `collab_id`s already match | 10/21 | Active |
 
 ## Log
 
@@ -439,3 +441,45 @@ showed up in the server terminal. Refs #11.
   `server/` and `addon/` at the pinned version.
 - Verified the fix against a real running `uvicorn` server too: `connect room=... clients=1`
   / `disconnect ...` now print in the terminal, not just under `caplog`.
+
+### 2026-10-21 · Apply remote operations without echo loops (#6)
+
+Added `addon/collaborative_blender/apply.py`: `apply_message` applies one parsed `ops`
+message to the local scene, building on `detect.suppressed()` (#5/D-035/D-038) and `ids`
+rather than changing either. Added an **Apply from clipboard** dev-aid button. Refs #6 —
+the issue stays open until the manual check below is done. `detect.py` only grew a
+read-only `origin()` getter; `flush()`/`suppressed()` themselves are unchanged.
+
+| Decision | Why |
+|---|---|
+| D-044: `apply_message` runs its whole batch inside one `detect.suppressed()` block, looking up `{collab_id: object}` once first | One `suppressed()` call per batch (not per operation) means detect's pending-local-edit flush and cache resync (D-038) each happen once, not once per operation; a single object lookup avoids `ids.find_object`'s scan per operation. |
+| D-045: Until #20 syncs room state, both clients must open the same saved `.blend` file, recorded in `addon/README.md` | `collab_id`s are assigned from random UUIDs per session (#4); two independently-opened files give the same object different IDs, so an operation from one would never match anything in the other. IDs are custom properties and so are saved in the file, which sidesteps this for manual testing until real room join exists. |
+
+**Details:**
+- `_set_location` / `_set_scale` / `_set_rotation` / `_set_name`, keyed from `property` in
+  a fixed dict (never `setattr` with a received name, protocol rule 5). `_set_rotation`
+  sets `rotation_mode` before the matching values property, so a mode change and new
+  values can never end up mismatched.
+- `_apply_op(op, objects, own_origin)` skips (and logs) an op whose `kind` isn't `set`, an
+  unknown `property`, an unknown `object`, or an `origin` equal to this client's own —
+  never raises. Written as one function, per the issue, so #8/#9 can add an ordering check
+  before the setter runs without restructuring the caller.
+- `apply_message` itself also tolerates a message that isn't a dict, isn't `{"v": 1,
+  "type": "ops", ...}`, or whose `ops` isn't a list — logs and returns rather than raising.
+- 15 tests in `addon/tests/test_apply.py`: each property (including both a quaternion and
+  an axis-angle rotation, the latter with a mode change), unknown object / kind / property
+  skipped without raising a batch that otherwise applies, malformed messages, own-origin
+  skip, no echo (`apply_message` then `detect.flush()` sends nothing), the #5 regression
+  scenario replayed through `apply_message` instead of `detect.suppressed()` directly,
+  last-wins within a batch, every protocol.md example message, and a round trip (a
+  message `detect` produced, relabelled to a fake remote origin so the own-origin skip
+  doesn't eat it, reproduces the same values on a reset copy of the object).
+- **Apply from clipboard** (`operators.py`, `panel.py`): drops everything before the
+  clipboard's first `{`, so a line copied straight out of the detection log (with its
+  `[collab A HH:MM:SS]` prefix) works unedited; reports a clear error for bad JSON instead
+  of raising.
+
+**Open / follow-up:** manual check (two Blenders, same `.blend`, copy a batch from A's
+log and apply it in B) is still open — see the message to Lucas for the exact steps,
+including preparing the shared file. Next: #12 WebSocket client, which calls
+`apply_message` for real instead of the clipboard dev aid.

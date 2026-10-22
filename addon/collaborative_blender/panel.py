@@ -24,6 +24,10 @@ class COLLAB_PT_main(bpy.types.Panel):
         else:
             layout.operator("collaborative.start_detection")
 
+        layout.separator()
+        layout.label(text="Apply (dev aid, #6)")
+        layout.operator("collaborative.apply_from_clipboard")
+
 
 def register() -> None:
     bpy.utils.register_class(COLLAB_PT_main)

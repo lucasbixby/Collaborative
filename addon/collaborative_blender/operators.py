@@ -4,7 +4,7 @@ import json
 
 import bpy
 
-from . import detect
+from . import apply, detect
 from .log import log
 
 
@@ -50,11 +50,35 @@ class COLLAB_OT_stop_detection(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class COLLAB_OT_apply_from_clipboard(bpy.types.Operator):
+    """Dev aid (#6): parse the clipboard as one `ops` message and apply it to the local
+    scene. Accepts a line copied straight from the detection log (its `[collab A ...]`
+    prefix is dropped), for testing #6 by hand before the WebSocket client (#12) exists."""
+
+    bl_idname = "collaborative.apply_from_clipboard"
+    bl_label = "Apply from clipboard"
+
+    def execute(self, context):
+        text = context.window_manager.clipboard
+        start = text.find("{")
+        if start == -1:
+            self.report({"ERROR"}, "Clipboard has no JSON object")
+            return {"CANCELLED"}
+        try:
+            message = json.loads(text[start:])
+        except json.JSONDecodeError as exc:
+            self.report({"ERROR"}, f"Invalid JSON: {exc}")
+            return {"CANCELLED"}
+        apply.apply_message(message)
+        return {"FINISHED"}
+
+
 _classes = (
     COLLAB_OT_join_room,
     COLLAB_OT_leave_room,
     COLLAB_OT_start_detection,
     COLLAB_OT_stop_detection,
+    COLLAB_OT_apply_from_clipboard,
 )
 
 
