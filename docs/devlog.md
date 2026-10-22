@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #11 WebSocket relay (manual check open), #6 Apply remote operations (manual check open), #8 Lamport clock (manual check open), #9 last-writer-wins (manual check open), #12 WebSocket client (implementation done; manual check open) |
-| Next up | #13 Join / Leave room buttons (wires detect/apply/client together for real) |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #7 Operation format |
-| Loose ends | #11's manual check (two probes, one in another room); #6's manual check (two Blenders, same `.blend`); #8/#9's manual check (apply an older line after a newer one); #12's manual check (real server + console + `ws_probe.py`); Adjust Last Operation spike item |
+| In progress | — |
+| Next up | #13 Join / Leave room buttons (wires detect/apply/client together for real), then #14 two-Blender prototype check |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client |
+| Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -584,3 +584,12 @@ console for now. Refs #12 — stays open until the manual check below is done.
 console, `ws_probe.py` in the same room) is still open — see the message to Lucas for
 the exact steps. Next: #13 Join / Leave room buttons wire `client.connect` /
 `client.send` / `apply.apply_message` together behind the panel, instead of the console.
+
+### 2026-10-21 · #12 manual check passed
+
+Lucas ran the real relay, connected Blender from the Python console and ran `ws_probe.py`
+in room `demo`. Moving the cube reached the probe; the probe's example message reached
+Blender (`apply: skip, unknown object`, expected); stopping and restarting the server
+went `reconnecting` → `connected`. Gotcha found: `detect.start()` is a no-op if the panel's
+dev-aid detection is already running (it logs instead of sending), so stop it first. #13
+removes that trap by having Join room start detection with `client.send`. #12 closed.
