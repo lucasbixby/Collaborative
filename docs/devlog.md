@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #11 WebSocket relay (implementation done; manual check open), #6 Apply remote operations (implementation done; manual check open), #8 Lamport clock (implementation done; manual check open), #9 last-writer-wins (implementation done; manual check open) |
-| Next up | #12 WebSocket client (connects #5/#6 to the relay) |
+| In progress | #11 WebSocket relay (manual check open), #6 Apply remote operations (manual check open), #8 Lamport clock (manual check open), #9 last-writer-wins (manual check open), #12 WebSocket client (implementation done; manual check open) |
+| Next up | #13 Join / Leave room buttons (wires detect/apply/client together for real) |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #7 Operation format |
-| Loose ends | #11's manual check (two probes, one in another room); #6's manual check (two Blenders, same `.blend`); #8/#9's manual check (apply an older line after a newer one); Adjust Last Operation spike item |
+| Loose ends | #11's manual check (two probes, one in another room); #6's manual check (two Blenders, same `.blend`); #8/#9's manual check (apply an older line after a newer one); #12's manual check (real server + console + `ws_probe.py`); Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -83,6 +83,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-045 | Until #20, both clients must open the same saved `.blend` so `collab_id`s already match | 10/21 | Active |
 | D-046 | The client Lamport clock (`ordering.LamportClock`) is one shared counter that never resets, not even across `detect.stop()` / `start()` | 10/21 | Active |
 | D-047 | Last-writer-wins via `ordering.Versions`: an incoming `set` is applied only if it's newer than the last value this client sent or applied for that key | 10/21 | Active |
+| D-048 | `websocket-client` 1.9.2 vendored at `addon/collaborative_blender/vendor/websocket/`, excluded from ruff and pyright | 10/21 | Active |
+| D-049 | `client.py` is two daemon threads (reader, writer) that never touch `bpy`; `drain()` is a plain function run by a `bpy.app.timers` tick every ~20 ms | 10/21 | Active |
+| D-050 | Reconnect backoff 0.5 s, 1, 2, 4, then every 8 s; the outbox persists across reconnects, capped at 1000 messages (drop the oldest) | 10/21 | Active |
+| D-051 | Operations another client sent while this one was disconnected are missed until catch-up (#20) exists | 10/21 | Active |
 
 ## Log
 
@@ -529,3 +533,54 @@ check below is done.
 still open — see the message to Lucas for the exact steps. Server-side counterparts
 (`server/app/sync/clock.py`, `conflicts.py`) wait for the operation log (#19) and
 convergence tests (#21).
+
+### 2026-10-21 · Add-on WebSocket client (#12)
+
+Vendored `websocket-client` and added `addon/collaborative_blender/client.py`, connecting
+#5/#6 to the relay (#11). No Join / Leave buttons yet (#13); driven from the Python
+console for now. Refs #12 — stays open until the manual check below is done.
+
+| Decision | Why |
+|---|---|
+| D-048: Vendor `websocket-client` 1.9.2 at `addon/collaborative_blender/vendor/websocket/` (`LICENSE` and `vendor/README.md` included; excluded from `ruff` and the type checker) | Blender's Python has no WebSocket library and add-ons can't rely on users running `pip install`. `websocket-client` is pure Python with no required dependencies and all-relative internal imports, so `from .vendor import websocket` needs no `sys.path` change and can't clash with another add-on's own copy. Rejected: `websockets` (asyncio, would need an event loop in a thread, fighting the design below); a hand-written client (framing, masking and ping are easy to get wrong). Verified by hand against the real relay from Blender 5.2's Python first (sends arrive at another client's reader; sending still works while that connection's reader is blocked in `recv()`; `close()` stops the reader in ~1 ms; a down server raises `ConnectionRefusedError`; after `close()`, `recv()` returns `""` instead of raising). |
+| D-049: `client.py` is two daemon threads — a reader (blocking `recv()` into an inbox queue) and a writer (an outbox queue into `send()`), which also owns the connect / reconnect lifecycle; `drain()` is a plain function a `bpy.app.timers` tick calls every ~20 ms | `bpy` is only safe on the main thread, so the threads never touch it; they only move text through queues. `drain()` being plain (not the timer callback itself) lets headless tests call it directly, the same reason `detect.flush()` is one (#5). |
+| D-050: Reconnect backoff 0.5 s, 1, 2, 4, then every 8 s; the outbox persists across reconnects, capped at 1000 (drop the oldest, logged) | A dropped connection should retry promptly at first without hammering a server that's actually down for a while. Keeping the outbox means a brief blip doesn't lose anything typed/moved during it; the cap keeps a long outage from growing memory without bound. |
+| D-051: Operations other clients sent while this one was disconnected are missed until catch-up (#20) exists | No message log to replay from yet; `join` doesn't carry a last-seen Lamport either (#11's `join` row in protocol.md is still TODO). Noted here rather than solved, matching the issue. |
+
+**Details:**
+- `connect(server_url, room_id, on_message)` checks `room_id` against the same pattern
+  the server enforces (`^[A-Za-z0-9_-]{1,64}$`) and raises `ValueError` synchronously,
+  before touching the network, for one the relay would refuse anyway (#11); otherwise it
+  returns immediately and the actual connection happens on the writer thread.
+- `send(message)` serializes to JSON and appends to the outbox; never blocks.
+- `disconnect()` signals both threads to stop, closes the socket (which wakes a reader
+  blocked in `recv()`), joins the writer (which itself joins its current reader before
+  returning), and unregisters the timer. Idempotent, like `detect.stop()`.
+- `status()` reads `"disconnected"` before any `connect()` or after `disconnect()`,
+  `"connecting"` for the very first attempt, `"connected"` once it succeeds, and
+  `"reconnecting"` for every attempt after a failure or a drop — including the first
+  attempt against a server that's down, so it never gets stuck reporting `"connecting"`
+  forever.
+- `drain()` parses each inbox message as JSON; an `ops` message goes to `on_message`
+  (intended to be `apply.apply_message`, passed in by the caller — `client.py` doesn't
+  import `apply` itself); an `error` message or invalid JSON is logged and stops there.
+- `unregister()` in `__init__.py` now also calls `client.disconnect()`, alongside
+  `detect.stop()` (#4).
+- 8 tests in `addon/tests/test_client.py` against a small fake relay (`websockets`,
+  added to `requirements-dev.txt` for tests only) run on a background thread with its
+  own event loop: connects to `"connected"`; `send()` arrives as JSON; a server message
+  reaches `on_message` only after `drain()`, and on the thread that called it (recorded
+  and compared inside the callback); `error` / invalid JSON are logged (checked via
+  `capsys`, since `log()` is a `print`, not `logging`) and never reach `on_message`;
+  stopping the fake server gives `"reconnecting"`, and restarting it on the same port
+  reconnects and delivers a message queued while it was down; connecting to a dead
+  server (`ws://localhost:1`) doesn't raise; `disconnect()` leaves no new threads in
+  `threading.enumerate()`; a bad room id raises before anything connects. One fake-relay
+  bug found along the way: `FakeRelay.stop()` wasn't idempotent, and the reconnect test
+  calls it manually before the fixture's own teardown calls it again — fixed with a
+  `_stopped` flag. 79 add-on tests pass; `ruff check .` clean (vendor/ excluded).
+
+**Open / follow-up:** manual check (real server, a Blender connected from the Python
+console, `ws_probe.py` in the same room) is still open — see the message to Lucas for
+the exact steps. Next: #13 Join / Leave room buttons wire `client.connect` /
+`client.send` / `apply.apply_message` together behind the panel, instead of the console.

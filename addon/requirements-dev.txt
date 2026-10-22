@@ -8,3 +8,4 @@ fake-bpy-module-5.2==20260730       # Type stubs only (bpy-stubs): VS Code autoc
 pytest>=8.2
 ruff==0.17.1                        # pinned: an older local ruff missed rules CI's version catches (#11)
 jsonschema>=4.23                    # Validates emitted ops messages against docs/protocol.md (#5)
+websockets>=13.0                    # A small fake relay server for client.py tests only (#12)

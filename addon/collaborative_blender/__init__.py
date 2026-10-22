@@ -14,7 +14,7 @@ bl_info = {
     "category": "System",
 }
 
-from . import detect, operators, panel, preferences
+from . import client, detect, operators, panel, preferences
 
 _modules = (preferences, operators, panel)
 
@@ -25,6 +25,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    client.disconnect()
     detect.stop()
     for module in reversed(_modules):
         module.unregister()

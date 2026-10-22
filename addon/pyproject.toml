@@ -8,6 +8,8 @@ addopts = "-ra"
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# Third-party code we didn't write and don't lint (#12); see vendor/README.md.
+extend-exclude = ["collaborative_blender/vendor"]
 
 [tool.ruff.lint]
 # Default rule set plus import sorting. Type-checker settings for the add-on live in the

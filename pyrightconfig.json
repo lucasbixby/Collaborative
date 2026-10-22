@@ -22,5 +22,11 @@
       "pythonVersion": "3.12"
     }
   ],
-  "exclude": ["**/node_modules", "**/.venv", "web"]
+  "exclude": [
+    "**/node_modules",
+    "**/.venv",
+    "web",
+    // Third-party code we didn't write and don't type-check (#12); see vendor/README.md.
+    "addon/collaborative_blender/vendor"
+  ]
 }
