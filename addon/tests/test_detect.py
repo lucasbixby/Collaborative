@@ -258,6 +258,28 @@ def test_lamport_increases_and_origin_stays_fixed(sent):
     assert second["ops"][1]["lamport"] > second["ops"][0]["lamport"]
 
 
+def test_lamport_clock_keeps_counting_up_across_stop_and_start(addon):
+    obj = _add_cube()
+    _settle()
+
+    messages = []
+    detect.start(messages.append)
+    detect.flush()  # enters the cache silently
+    obj.location = (1.0, 0.0, 0.0)
+    _settle()
+    first = detect.flush()
+    detect.stop()
+
+    detect.start(messages.append)  # a new origin, but the same shared Lamport clock
+    obj.location = (2.0, 0.0, 0.0)
+    _settle()
+    second = detect.flush()
+    detect.stop()
+
+    assert first["ops"][0]["origin"] != second["ops"][0]["origin"]
+    assert second["ops"][0]["lamport"] > first["ops"][0]["lamport"]
+
+
 def test_start_twice_registers_one_handler(addon):
     detect.start(lambda message: None)
     detect.start(lambda message: None)

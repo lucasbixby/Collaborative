@@ -7,11 +7,15 @@ Prototype limitation: `collab_id`s are assigned per Blender session (#4) from ra
 UUIDs, so an operation from one client only matches another's objects if both already
 have the *same* IDs on the *same* objects. Until joining a room syncs state (#20), both
 clients open the same saved `.blend` file first — see addon/README.md.
+
+Last-writer-wins (#8 / #9): an incoming `set` is only applied if it's newer than the
+last value this client sent or applied for that key, via the shared clock and `Versions`
+in `ordering.py`.
 """
 
 import bpy
 
-from . import detect, ids
+from . import detect, ids, ordering
 from .log import log
 
 # Fixed table (protocol rule 5): `property` is looked up here, never passed to `setattr`.
@@ -50,9 +54,10 @@ _SETTERS = {
 def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | None) -> None:
     """Apply one operation to `objects` (keyed by `collab_id`), or skip it and log why.
 
-    Never raises. Ordering and conflicts (#8 / #9) will add a check here before the
-    setter runs; kept as a single function so that slots in without restructuring the
-    caller.
+    Never raises: an unknown object / kind / property is skipped, and so is a `set` that
+    arrives older than the last value this client sent or applied for that
+    (`object`, `property`) key (last-writer-wins, #8 / #9), or whose setter itself raises
+    (a value that's schema-valid JSON but not a value Blender accepts).
     """
     if not isinstance(op, dict):
         log("apply: skip, operation is not an object")
@@ -70,7 +75,21 @@ def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | 
     if obj is None:
         log("apply: skip, unknown object", op.get("object"))
         return
-    setter(obj, op["value"])
+
+    op_id = (op.get("lamport"), op.get("origin"))
+    ordering.clock.observe(op_id[0])
+    key = (op["object"], op["property"])
+    if not ordering.versions.should_apply(key, op_id):
+        log("apply: skip, older than local", op["object"], op["property"])
+        return
+
+    try:
+        setter(obj, op["value"])
+    except Exception as exc:  # noqa: BLE001 - a malformed value must not crash the batch
+        log("apply: skip, setter raised", op["property"], exc)
+        return
+
+    ordering.versions.record(key, op_id)
 
 
 def apply_message(message: dict) -> None:

@@ -147,7 +147,12 @@ Only the common fields.
 1. **Ordering and conflicts.** Operations are ordered by (`lamport`, `origin`): higher Lamport
    wins, and on a tie the larger `origin` (string comparison) wins. For each (`object`,
    `property`), the last operation in that order is the value everyone ends up with
-   (last-writer-wins, D-006). Implemented in #8 and #9.
+   (last-writer-wins, D-006). Client-side (#8 / #9): before applying an incoming `set`, a
+   client checks it against the last value it sent or applied for that (`object`,
+   `property`) — only a strictly newer one is applied; an older one, or a tie lost on
+   `origin`, is skipped. Each client's own Lamport clock only ever moves forward: it ticks
+   for its own edits and merges in (`max`) every timestamp it receives, and never resets,
+   not even across rejoining. Server-side ordering (a log and catch-up) is #19 and #21.
 2. **Deletes win (D-026).** Once an object is deleted, later `set` operations for it are
    ignored. Receivers remember deleted IDs (tombstones) so late-arriving operations stay ignored.
 3. **Creates are idempotent.** A `create` for an ID that already exists is ignored.

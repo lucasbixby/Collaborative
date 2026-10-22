@@ -12,6 +12,7 @@ from collaborative_blender import apply, detect, ids
 PROTOCOL_MD = Path(__file__).resolve().parents[2] / "docs" / "protocol.md"
 
 REMOTE_ORIGIN = "11111111-1111-1111-1111-111111111111"
+OTHER_REMOTE_ORIGIN = "22222222-2222-2222-2222-222222222222"
 
 
 def _example_messages() -> list[dict]:
@@ -210,6 +211,81 @@ def test_pending_local_edit_still_sent_when_remote_batch_applied(sent):
     assert op["value"] == [5.0, 0.0, 0.0]
 
 
+def test_newer_incoming_op_is_applied(addon):
+    obj = _add_cube()
+    ids.ensure_ids()
+    collab_id = ids.get_id(obj)
+
+    apply.apply_message(
+        _ops_message(_set_op(collab_id, "location", [1.0, 0.0, 0.0], lamport=1))
+    )
+    apply.apply_message(
+        _ops_message(_set_op(collab_id, "location", [2.0, 0.0, 0.0], lamport=2))
+    )
+
+    assert tuple(obj.location) == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_older_incoming_op_is_ignored_after_a_newer_local_edit(sent):
+    # Detect's own emission records a version (D-044); an incoming op for the same key
+    # must be checked against it too, not just against other incoming ops.
+    obj = _add_cube()
+    _settle()
+    detect.flush()  # enters the cache
+
+    obj.location = (1.0, 0.0, 0.0)
+    _settle()
+    local_message = detect.flush()
+    local_lamport = local_message["ops"][0]["lamport"]
+
+    older = _set_op(
+        ids.get_id(obj),
+        "location",
+        [9.0, 9.0, 9.0],
+        lamport=max(local_lamport - 1, 1),  # a lower lamport loses regardless of origin
+        origin=REMOTE_ORIGIN,
+    )
+    apply.apply_message(_ops_message(older))
+
+    assert tuple(obj.location) == pytest.approx((1.0, 0.0, 0.0))  # the local edit still stands
+
+
+def test_equal_lamport_is_decided_by_origin(addon):
+    obj = _add_cube()
+    ids.ensure_ids()
+    collab_id = ids.get_id(obj)
+
+    # REMOTE_ORIGIN < OTHER_REMOTE_ORIGIN by string comparison.
+    apply.apply_message(
+        _ops_message(_set_op(collab_id, "location", [1.0, 0.0, 0.0], lamport=1, origin=REMOTE_ORIGIN))
+    )
+    apply.apply_message(
+        _ops_message(
+            _set_op(collab_id, "location", [2.0, 0.0, 0.0], lamport=1, origin=OTHER_REMOTE_ORIGIN)
+        )
+    )
+    assert tuple(obj.location) == pytest.approx((2.0, 0.0, 0.0))  # larger origin wins the tie
+
+    apply.apply_message(
+        _ops_message(_set_op(collab_id, "location", [3.0, 0.0, 0.0], lamport=1, origin=REMOTE_ORIGIN))
+    )
+    assert tuple(obj.location) == pytest.approx((2.0, 0.0, 0.0))  # smaller origin still loses
+
+
+def test_setter_exception_is_caught_and_the_rest_of_the_batch_still_applies(addon):
+    obj = _add_cube()
+    ids.ensure_ids()
+    collab_id = ids.get_id(obj)
+    message = _ops_message(
+        _set_op(collab_id, "rotation", {"mode": "XYZ"}, lamport=1),  # missing "values"
+        _set_op(collab_id, "scale", [3.0, 3.0, 3.0], lamport=2),
+    )
+
+    apply.apply_message(message)  # must not raise
+
+    assert tuple(obj.scale) == pytest.approx((3.0, 3.0, 3.0))
+
+
 def test_two_sets_of_the_same_property_in_a_batch_last_wins(addon):
     obj = _add_cube()
     ids.ensure_ids()
@@ -240,7 +316,11 @@ def test_round_trip_reproduces_the_same_values(sent):
     _settle()
     message = detect.flush()
     for op in message["ops"]:
-        op["origin"] = REMOTE_ORIGIN  # simulate this batch having arrived from elsewhere
+        # Simulate this batch having arrived from elsewhere: a different origin, and (so
+        # it doesn't tie against the version detect's own emission just recorded for the
+        # same key) a clearly higher lamport.
+        op["origin"] = REMOTE_ORIGIN
+        op["lamport"] += 1000
 
     # Reset to a blank slate, then apply exactly what detect sent for that change.
     obj.location = (0.0, 0.0, 0.0)

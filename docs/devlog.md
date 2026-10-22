@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #11 WebSocket relay (implementation done; manual check open), #6 Apply remote operations (implementation done; manual check open), #8 Lamport clock, #9 last-writer-wins |
+| In progress | #11 WebSocket relay (implementation done; manual check open), #6 Apply remote operations (implementation done; manual check open), #8 Lamport clock (implementation done; manual check open), #9 last-writer-wins (implementation done; manual check open) |
 | Next up | #12 WebSocket client (connects #5/#6 to the relay) |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #7 Operation format |
-| Loose ends | #11's manual check (two probes, one in another room); #6's manual check (two Blenders, same `.blend`); Adjust Last Operation spike item |
+| Loose ends | #11's manual check (two probes, one in another room); #6's manual check (two Blenders, same `.blend`); #8/#9's manual check (apply an older line after a newer one); Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -81,6 +81,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-043 | `create_app()` configures logging for the `app` logger namespace at startup | 10/20 | Active |
 | D-044 | `apply_message` runs its whole batch inside one `detect.suppressed()` block, with objects looked up once per batch | 10/21 | Active |
 | D-045 | Until #20, both clients must open the same saved `.blend` so `collab_id`s already match | 10/21 | Active |
+| D-046 | The client Lamport clock (`ordering.LamportClock`) is one shared counter that never resets, not even across `detect.stop()` / `start()` | 10/21 | Active |
+| D-047 | Last-writer-wins via `ordering.Versions`: an incoming `set` is applied only if it's newer than the last value this client sent or applied for that key | 10/21 | Active |
 
 ## Log
 
@@ -483,3 +485,47 @@ read-only `origin()` getter; `flush()`/`suppressed()` themselves are unchanged.
 log and apply it in B) is still open — see the message to Lucas for the exact steps,
 including preparing the shared file. Next: #12 WebSocket client, which calls
 `apply_message` for real instead of the clipboard dev aid.
+
+### 2026-10-21 · Lamport clock and last-writer-wins (#8, #9)
+
+Added `addon/collaborative_blender/ordering.py` (`LamportClock`, `newer`, `Versions`) and
+wired it into `detect.py` and `apply.py`, per the single design on #8 (#9 is the
+`Versions` half of the same change). Fixes the #5 review note: the client counter no
+longer resets on `detect.start()`. Refs #8, refs #9 — both stay open until the manual
+check below is done.
+
+| Decision | Why |
+|---|---|
+| D-046: The Lamport clock is one shared, module-level counter (`ordering.clock`) that never resets, including across `detect.stop()` / `start()` | The original counter reset to 0 on every `start()` (D-025); after a restart, a client's new edits would get lower timestamps than its own earlier ones (or others' recent ones), so last-writer-wins could discard a client's own newest change. `clock.observe(n)` also merges in every timestamp a client receives (`max`), so its own next tick always exceeds anything it has seen. |
+| D-047: Last-writer-wins is `ordering.Versions`: a `dict[(collab_id, property), (lamport, origin)]` of the last value sent or applied for that key, checked before applying an incoming `set` | One shared instance for both `detect.py` (records what it sends) and `apply.py` (checks and records what it applies) means an incoming operation is compared against local edits too, not just other incoming ones — the scenario the manual check exercises. |
+
+**Details:**
+- `ordering.py` has no `bpy` import, so `LamportClock`, `newer` and `Versions` are plain
+  Python, independently testable and reasoned about.
+- `detect._make_op` now gets its `lamport` from `ordering.clock.tick()` and records
+  `(collab_id, property) -> (lamport, origin)` via `ordering.versions.record`, instead of
+  its own counter. `start()` no longer touches any counter at all.
+- `apply._apply_op`, for each `set` that passes the existing kind/property/object checks:
+  `ordering.clock.observe(op["lamport"])`, then `ordering.versions.should_apply(key,
+  op_id)` before running the setter; skips (and logs `apply: skip, older than local`)
+  otherwise. The setter call is now also wrapped in `try`/`except`, logging and skipping
+  rather than raising, since a schema-valid value can still be one Blender rejects
+  (follow-up noted on #6).
+- `docs/protocol.md` rule 1 now describes the client-side check and the clock's merge
+  rule, rather than just saying "Implemented in #8 and #9".
+- Tests: `test_ordering.py` (6, plain Python: tick, observe + a following tick, tie
+  breaking, `should_apply` for an unknown / newer / older / equal key); `test_convergence.py`
+  (10 seeds, plain Python: 3 replicas apply the same randomly-generated operations each in
+  their own shuffled order and end up identical); 1 new case in `test_detect.py` (the
+  clock keeps counting up across `stop()`/`start()`) and 4 in `test_apply.py` (newer
+  applied, an older local-then-remote case, a Lamport tie decided by origin, a setter
+  exception not aborting the rest of the batch). Existing `test_apply.py` cases needed one
+  fix: the round-trip test replays a message `detect` itself just emitted (and so already
+  recorded a version for), so relabelling only its `origin` could tie against that record
+  depending on random origin ordering — it now also bumps the lamport, matching what an
+  actually-newer remote batch would look like. 71 add-on tests pass; `ruff check .` clean.
+
+**Open / follow-up:** manual check (two Blenders, same `.blend` as #6's workaround) is
+still open — see the message to Lucas for the exact steps. Server-side counterparts
+(`server/app/sync/clock.py`, `conflicts.py`) wait for the operation log (#19) and
+convergence tests (#21).

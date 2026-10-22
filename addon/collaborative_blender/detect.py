@@ -7,7 +7,8 @@ batch. One mechanism covers drags, renames, undo/redo and new objects, since not
 object references across undo (D-018 to D-021).
 
 Changes caused by applying a remote operation go through `suppressed()` (see apply.py, #6)
-to avoid echoing them back out as if they were local edits.
+to avoid echoing them back out as if they were local edits. Each emitted op's Lamport
+timestamp comes from the shared clock in `ordering.py` (#8), not a counter of its own.
 """
 
 import uuid
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 import bpy
 from bpy.app.handlers import persistent
 
-from . import ids
+from . import ids, ordering
 
 INTERVAL = 0.05  # 50 ms (D-019)
 _TRACKED_PROPERTIES = ("location", "rotation", "scale", "name")
@@ -25,7 +26,6 @@ _active = False
 _dirty = False
 _suppress_depth = 0
 _cache: dict[str, dict[str, object]] = {}
-_lamport = 0
 _origin: str | None = None
 _send = None
 
@@ -70,14 +70,14 @@ def _op_value(prop: str, value: object) -> object:
 
 
 def _make_op(collab_id: str, prop: str, value: object) -> dict:
-    global _lamport
-    _lamport += 1
+    lamport = ordering.clock.tick()
+    ordering.versions.record((collab_id, prop), (lamport, _origin))
     return {
         "kind": "set",
         "object": collab_id,
         "property": prop,
         "value": _op_value(prop, value),
-        "lamport": _lamport,
+        "lamport": lamport,
         "origin": _origin,
     }
 
@@ -144,17 +144,17 @@ def _tick() -> float:
 def start(send) -> None:
     """Start turning local edits into operations, delivered to `send` every ~50 ms.
 
-    Generates a new client `origin` and resets the Lamport counter (D-025), then snapshots
-    the current scene so joining a room doesn't resend everything already in it. Calling
+    Generates a new client `origin` (D-025), then snapshots the current scene so joining
+    a room doesn't resend everything already in it. The Lamport clock is shared and never
+    resets (D-046), so a restarted client's edits still outrank its own older ones. Calling
     this again while already started does nothing, so it's safe to call more than once.
     """
-    global _active, _send, _origin, _lamport, _dirty, _cache
+    global _active, _send, _origin, _dirty, _cache
     if _active:
         return
     _active = True
     _send = send
     _origin = str(uuid.uuid4())
-    _lamport = 0
     _dirty = False
     _cache = _snapshot()
     for handler_list, handler in _HANDLERS:
