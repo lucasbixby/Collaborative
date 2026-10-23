@@ -26,10 +26,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 
 | | |
 |---|---|
-| Phase | Prototype (due 10/24) |
-| In progress | #14 Two-Blender prototype check |
-| Next up | Feature freeze milestone: #15 create/delete sync, #20 join snapshot |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room |
+| Phase | Feature freeze (due 11/16); Prototype done 10/23 |
+| In progress | — |
+| Next up | #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log; then #20 Snapshots and catch-up |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -660,3 +660,19 @@ updates by itself (Connecting → Connected → Reconnecting → Connected acros
 restart), moves reach the probe and the probe's message reaches Blender, Leave stops
 sending, an invalid room id shows an error and stays disconnected, and File › New leaves
 the room. #13 closed.
+
+### 2026-10-23 · Prototype milestone done (#14)
+
+Lucas ran the two-Blender check on `shared.blend` in room `demo`: move, rotate, scale,
+rename, typed N-panel values and undo all sync both ways; simultaneous edits to one object
+converge; no echo; Leave / rejoin and a server restart recover. Known limits confirmed, as
+expected: added or deleted objects don't sync (#15), and edits made while disconnected aren't
+caught up (#20). Demo video recorded for the submission. Prototype milestone closed a day
+early.
+
+Planning for Feature freeze: #10 moved from Prototype to Feature freeze (it wasn't needed for
+the two-Blender check; the relay already validates schema and size). Next batch, with
+designs in the issues: #15 (create / delete, including a new ID for objects brought back by
+undo, so tombstones stay correct), #10 (pin `origin` per connection), #19 (SQLite operation
+log, with the server's arrival `seq` as the catch-up cursor). #20 builds on #15 and #19 and
+removes the shared-`.blend` requirement (D-045).
