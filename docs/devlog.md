@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | #13 Join / Leave room buttons (implementation done; manual check open) |
-| Next up | #14 Two-Blender prototype check |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client |
-| Loose ends | #13's manual check (one Blender, buttons only, with `ws_probe.py`); Adjust Last Operation spike item |
+| In progress | #14 Two-Blender prototype check |
+| Next up | Feature freeze milestone: #15 create/delete sync, #20 join snapshot |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room |
+| Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -652,3 +652,11 @@ until the manual check below is done.
 **Open / follow-up:** manual check (one Blender, buttons only, `ws_probe.py` in the same
 room) is still open — see the message to Lucas for the exact steps. Next: #14, the first
 full two-Blender prototype check with everything built so far.
+
+### 2026-10-22 · #13 manual check passed
+
+Lucas ran one Blender (buttons only) with `ws_probe.py` in room `demo`: the status line
+updates by itself (Connecting → Connected → Reconnecting → Connected across a server
+restart), moves reach the probe and the probe's message reaches Blender, Leave stops
+sending, an invalid room id shows an error and stays disconnected, and File › New leaves
+the room. #13 closed.
