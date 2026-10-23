@@ -1,104 +1,13 @@
-"""Tests for the WebSocket client (#12), against a small fake relay server.
+"""Tests for the WebSocket client (#12), against conftest.py's fake relay server."""
 
-Not the real relay (#11 has its own tests against that) — just enough of a WebSocket
-server, run on a background thread with its own event loop, to drive client.py's own
-behaviour: connecting, sending, receiving, and reconnecting.
-"""
-
-import asyncio
 import json
 import threading
-import time
 
 import pytest
-import websockets
+from conftest import FakeRelay
+from conftest import wait_until as _wait_until
 
 from collaborative_blender import client
-
-
-def _wait_until(predicate, timeout=2.0, interval=0.01) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(interval)
-    raise AssertionError(f"condition not met within {timeout}s")
-
-
-class FakeRelay:
-    """A minimal WebSocket server: records what it receives, and lets a test push a
-    message to the connected client, or stop (and later restart) the server, on demand.
-    """
-
-    def __init__(self) -> None:
-        self.received: list[str] = []
-        self.port: int | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._server: websockets.Server | None = None
-        self._sockets: list = []
-        self._thread: threading.Thread | None = None
-        self._stopped = False
-
-    def start(self, port: int = 0) -> None:
-        ready = threading.Event()
-
-        def _run() -> None:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._loop = loop
-
-            async def _main() -> None:
-                # A short close_timeout: otherwise stop() waits (by default) up to 10 s
-                # for a close-handshake ack the test's client never sends.
-                self._server = await websockets.serve(
-                    self._handler, "localhost", port, close_timeout=0.2
-                )
-                self.port = next(iter(self._server.sockets)).getsockname()[1]
-                ready.set()
-                await self._server.wait_closed()
-
-            loop.run_until_complete(_main())
-
-        self._thread = threading.Thread(target=_run, daemon=True)
-        self._thread.start()
-        ready.wait(timeout=5)
-
-    async def _handler(self, websocket) -> None:
-        self._sockets.append(websocket)
-        try:
-            async for message in websocket:
-                self.received.append(message)
-        finally:
-            if websocket in self._sockets:
-                self._sockets.remove(websocket)
-
-    def send_to_client(self, text: str) -> None:
-        for socket in list(self._sockets):
-            asyncio.run_coroutine_threadsafe(socket.send(text), self._loop).result(timeout=5)
-
-    def stop(self) -> None:
-        """Idempotent: a test may stop the relay itself, so the fixture's own teardown
-        must not fail when it calls this a second time."""
-        if self._stopped:
-            return
-        self._stopped = True
-        if self._server is not None:
-
-            async def _close() -> None:
-                self._server.close()
-                await self._server.wait_closed()
-
-            asyncio.run_coroutine_threadsafe(_close(), self._loop).result(timeout=5)
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-
-
-@pytest.fixture
-def relay():
-    server = FakeRelay()
-    server.start()
-    yield server
-    server.stop()
 
 
 @pytest.fixture(autouse=True)

@@ -76,20 +76,25 @@ addon/scripts/blender.sh --two
 Starts clients **A** and **B** sharing one terminal; every `log(...)` line says which
 client wrote it. Ctrl+C closes both.
 
-**Testing #5 / #6 by hand, until #20 (snapshots) exists:** two separately-opened Blenders
+**Testing sync by hand, until #20 (snapshots) exists:** two separately-opened Blenders
 give the same objects different random `collab_id`s, so an operation from A would never
 match an object in B. Both clients must open **the same saved `.blend` file**, so the IDs
 `ensure_ids()` already assigned are identical on both sides (IDs are custom properties,
 so they're saved in the file and survive reopening it, #4). To prepare one:
 
-1. Open Blender once, add the objects you want to test with, start detection (the
-   Collaborative panel), and let it run for a moment so `ensure_ids()` tags everything.
+1. Open Blender once, add the objects you want to test with, join a room (the
+   Collaborative panel) so detection runs and `ensure_ids()` tags everything, then leave.
 2. Save the file (e.g. `shared.blend`).
 3. Open that same file in both client A and client B.
 
-With both on the same file: trigger a change in A, copy the logged batch (the line after
-`[collab A ...]`) from A's terminal, and use **Apply from clipboard** in B's Collaborative
-panel to apply it there by hand.
+With both on the same file and the server running (`uvicorn app.main:app`, see
+`server/README.md`), **Join room** in both A and B with the same Room ID: edits in one
+now reach the other through the relay (#11 / #12 / #13). `server/scripts/ws_probe.py` can
+join the same room from a terminal to watch the traffic.
+
+**Apply from clipboard** (Collaborative panel) is still there as a dev aid: paste a
+logged batch (or a hand-written one) and apply it without a server, e.g. to check
+last-writer-wins (#8 / #9) by hand.
 
 ## VS Code tasks
 

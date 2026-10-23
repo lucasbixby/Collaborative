@@ -5,12 +5,16 @@ loaded through Blender's own add-on loader (addon_utils), the same path a user's
 Blender takes, rather than by importing it directly.
 """
 
+import asyncio
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
+import websockets
 
 ADDON_NAME = "collaborative_blender"
 ADDON_SOURCE = Path(__file__).resolve().parents[1] / ADDON_NAME
@@ -82,3 +86,91 @@ class _DepsgraphLog:
         bpy.context.view_layer.update()
         recorded, self.updates = self.updates, []
         return recorded
+
+
+def wait_until(predicate, timeout=2.0, interval=0.01) -> None:
+    """Poll `predicate` until it's true, for asserting on client.py's background
+    threads (#12) without a fixed sleep. Raises on timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(interval)
+    raise AssertionError(f"condition not met within {timeout}s")
+
+
+class FakeRelay:
+    """A minimal WebSocket server (#12's tests, and #13's): records what it receives,
+    and lets a test push a message to the connected client, or stop (and later
+    restart) the server, on demand. Not the real relay — #11 has its own tests for that.
+    """
+
+    def __init__(self) -> None:
+        self.received: list[str] = []
+        self.port: int | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._server: websockets.Server | None = None
+        self._sockets: list = []
+        self._thread: threading.Thread | None = None
+        self._stopped = False
+
+    def start(self, port: int = 0) -> None:
+        ready = threading.Event()
+
+        def _run() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+
+            async def _main() -> None:
+                # A short close_timeout: otherwise stop() waits (by default) up to 10 s
+                # for a close-handshake ack the test's client never sends.
+                self._server = await websockets.serve(
+                    self._handler, "localhost", port, close_timeout=0.2
+                )
+                self.port = next(iter(self._server.sockets)).getsockname()[1]
+                ready.set()
+                await self._server.wait_closed()
+
+            loop.run_until_complete(_main())
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+        ready.wait(timeout=5)
+
+    async def _handler(self, websocket) -> None:
+        self._sockets.append(websocket)
+        try:
+            async for message in websocket:
+                self.received.append(message)
+        finally:
+            if websocket in self._sockets:
+                self._sockets.remove(websocket)
+
+    def send_to_client(self, text: str) -> None:
+        for socket in list(self._sockets):
+            asyncio.run_coroutine_threadsafe(socket.send(text), self._loop).result(timeout=5)
+
+    def stop(self) -> None:
+        """Idempotent: a test may stop the relay itself, so the fixture's own teardown
+        must not fail when it calls this a second time."""
+        if self._stopped:
+            return
+        self._stopped = True
+        if self._server is not None:
+
+            async def _close() -> None:
+                self._server.close()
+                await self._server.wait_closed()
+
+            asyncio.run_coroutine_threadsafe(_close(), self._loop).result(timeout=5)
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+@pytest.fixture
+def relay():
+    server = FakeRelay()
+    server.start()
+    yield server
+    server.stop()

@@ -27,10 +27,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Prototype (due 10/24) |
-| In progress | — |
-| Next up | #13 Join / Leave room buttons (wires detect/apply/client together for real), then #14 two-Blender prototype check |
+| In progress | #13 Join / Leave room buttons (implementation done; manual check open) |
+| Next up | #14 Two-Blender prototype check |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client |
-| Loose ends | Adjust Last Operation spike item |
+| Loose ends | #13's manual check (one Blender, buttons only, with `ws_probe.py`); Adjust Last Operation spike item |
 
 ## Decision index
 
@@ -87,6 +87,11 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-049 | `client.py` is two daemon threads (reader, writer) that never touch `bpy`; `drain()` is a plain function run by a `bpy.app.timers` tick every ~20 ms | 10/21 | Active |
 | D-050 | Reconnect backoff 0.5 s, 1, 2, 4, then every 8 s; the outbox persists across reconnects, capped at 1000 messages (drop the oldest) | 10/21 | Active |
 | D-051 | Operations another client sent while this one was disconnected are missed until catch-up (#20) exists | 10/21 | Active |
+| D-052 | `room_id` lives on `WindowManager`, not `Scene`, so it isn't saved into the `.blend` or treated as a scene edit | 10/22 | Active |
+| D-053 | Join always runs `detect.stop()` before `detect.start(client.send)`, never just `start()` | 10/22 | Active |
+| D-054 | A ~0.25 s main-thread timer compares `client.status()` and `tag_redraw()`s `VIEW_3D` areas only when it changes | 10/22 | Active |
+| D-055 | A `load_pre` handler leaves the current room before a different file loads | 10/22 | Active |
+| D-056 | Start / Stop detection dev aids (D-036) removed; Join / Leave replace them | 10/22 | Active |
 
 ## Log
 
@@ -593,3 +598,57 @@ Blender (`apply: skip, unknown object`, expected); stopping and restarting the s
 went `reconnecting` → `connected`. Gotcha found: `detect.start()` is a no-op if the panel's
 dev-aid detection is already running (it logs instead of sending), so stop it first. #13
 removes that trap by having Join room start detection with `client.send`. #12 closed.
+
+### 2026-10-22 · Wire up Join room / Leave room (#13)
+
+Join room and Leave room now do for real what the #12 manual check did from the Python
+console: connect/disconnect the client, start/stop detection, and show live status.
+Removed the Start / Stop detection dev aids (Join replaces them). Refs #13 — stays open
+until the manual check below is done.
+
+| Decision | Why |
+|---|---|
+| D-052: `room_id` is a `StringProperty` on `bpy.types.WindowManager`, default `"demo"`, not on `Scene` | A `Scene` property would be saved into the `.blend` and (per #5/D-033) setting it might register as something detection has to think about. Window-manager state is exactly "this session, this room" and nothing more. |
+| D-053: Join always calls `detect.stop()` before `detect.start(client.send)`, never `start()` alone | `start()` is a no-op while already active (#5's idempotency guard) — if the old dev-aid detection (or a previous room) left it running, a bare `start()` would silently keep sending to whatever `send` callback was already wired up (the terminal log) instead of `client.send`. This is the exact trap the #12 manual check hit by hand. |
+| D-054: A ~0.25 s main-thread timer compares `client.status()` to its last-seen value and calls `tag_redraw()` on every `VIEW_3D` area's `UI` region only when it changes; registered by Join, unregistered by Leave | `client.status()` changes on a background thread (#12), and Blender only redraws a panel on mouse hover, so without this the status line would look frozen. The timer only ever reads `status()` — never the socket — keeping the "threads never touch `bpy`" rule from #12 intact. |
+| D-055: A `load_pre` handler runs the same Leave logic before a different file loads | Detection's cache and the scene's `collab_id`s belong to the file being replaced; staying connected across a file switch would mean sending operations for objects that, from the room's perspective, no longer exist. |
+| D-056: Start / Stop detection (D-036) removed; `panel.py` and `operators.py` lost those buttons and operators | They're exactly what Join now does, correctly (D-053) — keeping both around is what caused the #12 trap. `detect.is_active()`, now unused, was removed too. |
+
+**Details:**
+- `COLLAB_OT_join_room.poll()` requires `client.status() == "disconnected"`; `execute()`
+  reads the server URL from `preferences.addons[__package__].preferences.server_url`
+  (already existed) and the room id from `window_manager.room_id`, calls
+  `client.connect(...)`, catches `ValueError` from an invalid room id (`self.report`,
+  `{"CANCELLED"}`, nothing started), otherwise does D-053's stop-then-start and starts
+  the status-watch timer. `COLLAB_OT_leave_room.poll()` requires status `!=
+  "disconnected"`; both it and the new `_on_load_pre` call one shared `_leave_room()`
+  function (`detect.stop()`, `client.disconnect()`, stop the status-watch timer).
+- Panel: the room field is in a `row.enabled = (status == "disconnected")` row, so it's
+  greyed out while connecting / connected / reconnecting; the status line reads from a
+  `_STATUS_TEXT` dict keyed by `client.status()`, formatted with the room name, matching
+  the issue's table exactly (`"Not connected"`, `"Connecting to {room}…"`, …).
+- 6 tests in `addon/tests/test_join_leave.py`, against #12's fake relay (moved from
+  `test_client.py` into `conftest.py` as `FakeRelay` / `wait_until`, now shared by both
+  files): Join connects, starts detection, and a moved object reaches the relay; an
+  invalid room id raises (Blender re-raises an operator's `self.report({"ERROR"}, ...)`
+  as a Python `RuntimeError` when called via `bpy.ops` from a script, so the test catches
+  that) and nothing started; Leave disconnects and stops detection; Join while detection
+  was already running still sends (the regression test for D-053); the `load_pre` handler
+  is registered and leaves the room; the status-text table.
+- Bug found writing these tests, not in the production code: a test file's own
+  `from collaborative_blender import X` at module level binds once, at collection time,
+  to whichever module objects exist then. `conftest.py`'s `addon` fixture drops and
+  re-imports the package fresh for every test (so Blender's own registration stays
+  clean), so that module-level binding goes stale after the first test — fine for tests
+  that only ever call plain functions (`detect.flush()`, consistently against that same
+  stale copy), but not here, since `bpy.ops.collaborative.join_room()` runs the
+  *currently registered* operator, which calls into the *current* `client` / `detect`.
+  Checking a stale copy's `client.status()` afterwards just watches the wrong object
+  forever. Fixed by reading everything off the `addon` fixture's return value
+  (`addon.client`, `addon.detect`, ...), which is always the module actually in effect.
+- `addon/README.md`'s manual-sync section now describes joining a room with both
+  clients instead of starting the old dev-aid detection.
+
+**Open / follow-up:** manual check (one Blender, buttons only, `ws_probe.py` in the same
+room) is still open — see the message to Lucas for the exact steps. Next: #14, the first
+full two-Blender prototype check with everything built so far.

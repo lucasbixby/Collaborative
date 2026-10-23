@@ -177,11 +177,6 @@ def stop() -> None:
         bpy.app.timers.unregister(_tick)
 
 
-def is_active() -> bool:
-    """Whether detection is currently running (for the panel's Start/Stop button)."""
-    return _active
-
-
 def origin() -> str | None:
     """This client's own `origin` UUID (None if detection hasn't started). Lets apply.py
     (#6) defensively skip an incoming operation that is somehow this client's own."""
