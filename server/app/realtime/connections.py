@@ -1,7 +1,8 @@
 """Tracks which sockets are in which room and broadcasts operations to them.
 
 Knows nothing about operation contents; ordering and validation live in app.sync. One
-instance per server process, held in memory: rooms don't survive a restart (#19).
+instance per server process, held in memory: who's connected doesn't survive a restart, though
+the operations they sent do (#19).
 """
 
 from fastapi import WebSocket

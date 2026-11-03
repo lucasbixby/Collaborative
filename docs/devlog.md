@@ -27,9 +27,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
-| In progress | #10 Origin validation (in review) |
-| Next up | #19 Persist the operation log; then #20 Snapshots and catch-up |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync |
+| In progress | — |
+| Next up | #20 Snapshots and catch-up |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log (in review; manual check open) |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -100,6 +100,12 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-062 | The newest connection to claim an origin takes it over, rather than being rejected while the old one looks alive | 11/03 | Active |
 | D-063 | Origin checks aren't proof of identity: a live client can still claim another's origin until auth exists | 11/03 | Active |
 | D-064 | A connection that lost its origin stays open and pinned, getting `error` for anything it sends | 11/03 | Active |
+| D-065 | The database engine is built at startup and kept on `app.state`, never at import | 11/03 | Active |
+| D-066 | SQLite connections set a 5 s busy timeout, then WAL | 11/03 | Active |
+| D-067 | No migrations tool yet: `create_all` at startup | 11/03 | Active |
+| D-068 | `seq` uses SQLite AUTOINCREMENT, so it's never reused | 11/03 | Active |
+| D-069 | Lamport is capped at 2^63 − 1 in the protocol | 11/03 | Active |
+| D-070 | A failed write gets a generic `error` and isn't broadcast or retried | 11/03 | Active |
 
 ## Log
 
@@ -756,3 +762,56 @@ gets the usual `error` reply (D-040), isn't relayed, and the connection stays op
   left to see the `error`, so that edit is lost. It needs the old socket's message to be processed
   after the new one's, which is unlikely since it arrived first.
 - #19: append to the log only after these checks, so rejected messages are never logged.
+
+### 2026-11-03 · Persist the operation log (#19)
+
+The relay now saves every valid message before broadcasting it: parse → `origins.check` → append
+→ broadcast. History lives in one SQLite table, `operations`, and survives a restart. Rooms and
+who's connected are still in memory (D-039). `scripts/show_log.py` prints a room's log. The manual check below is still open.
+
+| Decision | Why |
+|---|---|
+| D-065: The engine is built in the FastAPI lifespan and kept on `app.state`; `create_app(database_url=None)` can override the URL | `app.main` builds an app at import, so a module-level engine would point every test at the same database, and the restart test needs two apps on one file. `session.py` holds only factories. |
+| D-066: SQLite connections set `busy_timeout=5000`, then `journal_mode=WAL` | Timeout first, because switching to WAL needs a lock itself. WAL is what adds value: `show_log.py` can read while the server writes, and writes don't wait for readers. The timeout mostly makes explicit what Python's `sqlite3` already does, 5 s by default. Measured: with the timeout forced to 0 the concurrency test hits a real `database is locked`, and with both pragmas removed it still passes on that default. Writers still go one at a time: 4 writers × 250 messages through real uvicorn took 0.63 s with no errors. |
+| D-067: No migrations tool; `create_all` at startup | One table that may still change, and no data worth keeping yet. `create_all` never alters an existing table, so a column change means deleting the database. Add Alembic when the schema starts changing with data worth keeping. |
+| D-068: `sqlite_autoincrement` on `seq` | A plain SQLite rowid can reuse the numbers of deleted newest rows. A reused `seq` would make a client's "everything after N" skip rows silently once #20's compaction deletes any. |
+| D-069: `lamport` is at most 2^63 − 1 (schema, model and protocol.md) | The spec had no upper limit, but a 64-bit column does, so an absurd value would pass validation and then fail as a database error. Now it's rejected as invalid. `lamport` is `BigInteger` so Postgres would hold the same range. |
+| D-070: A failed write gets a generic `error`, with details only in the server's log; no broadcast and no retry | Nothing may be broadcast that isn't in the log, and database errors can include SQL and paths. Cost: the sender has already applied its edit and the add-on only logs `error`, so that client differs from the others until #20 gives it a way to recover. A write can fail this way if the disk is full, or if another process holds the lock past the 5 s timeout. |
+
+**Details:**
+- `pyproject.toml` now asks for `sqlalchemy[asyncio]`. SQLAlchemy 2.1 makes `greenlet` optional and
+  async mode fails without it, so a fresh install, CI or Docker would have broken at runtime.
+  **Re-run `pip install -e ".[dev]"` after pulling.**
+- `append` commits and rolls back explicitly rather than using `session.begin()`, which raises if
+  a `since` on the same session has already started a transaction. #20 is likely to do that.
+- `since` clamps `limit` to 0..1000, because SQLite reads a negative LIMIT as "no limit".
+- `show_log.py` adds `server/` to its import path, since running a script only puts `scripts/`
+  there and the editable install didn't make `app` importable (the repo path has a space, which
+  may be why; not confirmed).
+- `.gitignore` had `server/data/`, which covers a server started from `server/`. Changed to `data/`
+  so starting it from anywhere else is covered too, including the `-wal` and `-shm` files that
+  `*.db` wouldn't match.
+- Created `server/README.md`, which didn't exist.
+- Verified with a one-off run: real Blender operators through real `detect` and `client.py` into
+  real uvicorn, then `kill -9`, restart and `show_log.py`. All rows survived, including the last
+  ones written.
+- Mutation-checked. One of my tests failed this check: the original "saved before broadcast" test
+  passed with the order reversed, because the write finished before the test looked. It's replaced
+  by a test that reads the log from inside the broadcast. Two other mutants (no append at all, and
+  an inclusive `after_seq`) are caught only by a hang: `receive_text` has no timeout, and the
+  `show_log.py` loop never ends if `since` repeats a row.
+
+**Open / follow-up:**
+- Manual check (Lucas): Blender edits in room `demo`, restart the server, `show_log.py demo`.
+- #23: `docker-compose.yml` already puts `/srv/data` on a volume and `WORKDIR /srv` makes `./data`
+  land there, so this should already work, but it hasn't been run in Docker.
+- #24 should measure the write-before-broadcast latency. Rough number from one run on this Mac:
+  A→B median 0.67 ms, p99 1.02 ms with small `set`s on an idle machine, with no before/after
+  comparison and no large meshes.
+- #20: `seq` order matches commit order on SQLite, which has one writer at a time. On Postgres a
+  sequence value can commit out of order, so "everything after N" could miss rows. Revisit before
+  switching (D-004).
+- A client's send retry after a failed connection can log the same operation twice, because
+  (`lamport`, `origin`) has no unique constraint. Replaying it is harmless since operations are
+  idempotent, and a constraint would turn a retry into a failed write and an `error`.
+- The log grows without limit until #20's compaction, and a large `create` is up to 64 KiB a row.

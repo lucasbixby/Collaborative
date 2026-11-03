@@ -24,7 +24,9 @@ STRICT = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 Uuid = Annotated[
     str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ]
-Lamport = Annotated[int, Field(ge=1)]
+# Capped at what a signed 64-bit database column holds (the log, #19), so an absurd value is
+# rejected here as invalid rather than failing later as a database error.
+Lamport = Annotated[int, Field(ge=1, le=2**63 - 1)]
 Vec3 = tuple[float, float, float]
 Vec4 = tuple[float, float, float, float]
 Name = Annotated[str, Field(min_length=1, max_length=255)]

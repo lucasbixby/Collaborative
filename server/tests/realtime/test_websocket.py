@@ -11,14 +11,17 @@ import copy
 import json
 import logging
 import re
+import threading
 import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import settings
 from app.realtime.websocket import manager, origins
+from app.sync import log as operation_log
 
 PROTOCOL_MD = Path(__file__).resolve().parents[3] / "docs" / "protocol.md"
 
@@ -325,6 +328,155 @@ def test_an_unexpected_exception_cannot_leak_a_pinned_origin(client, room, monke
 
     assert not [key for key in origins._pins if key[0] == room_id]
     assert not [key for key in origins._holders if key[0] == room_id]
+
+
+# -- Operation log (#19) ------------------------------------------------------------------
+
+
+def test_ops_are_saved_before_they_are_broadcast(client, room, monkeypatch):
+    # Looks at the log from inside the broadcast itself, so this can't pass by timing.
+    real_broadcast = manager.broadcast
+    saved_at_broadcast = []
+
+    async def checking_broadcast(room_id, text_, *, exclude):
+        async with client.app.state.sessions() as session:
+            saved_at_broadcast.append(len(await operation_log.since(session, room_id)))
+        await real_broadcast(room_id, text_, exclude=exclude)
+
+    monkeypatch.setattr(manager, "broadcast", checking_broadcast)
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        b.receive_text()
+
+    assert saved_at_broadcast == [2]
+
+
+def test_relayed_ops_are_in_the_log(client, room, read_log):
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        received = json.loads(b.receive_text())
+
+        rows = read_log(client, room_id)
+
+    assert [json.loads(row.payload) for row in rows] == received["ops"]
+    assert [row.kind for row in rows] == ["set", "set"]
+    assert rows[0].origin == MOVE_AND_ROTATE["ops"][0]["origin"]
+    assert rows[0].object == MOVE_AND_ROTATE["ops"][0]["object"]
+    assert rows[0].lamport == MOVE_AND_ROTATE["ops"][0]["lamport"]
+    assert rows[0].seq < rows[1].seq
+
+
+def test_log_is_per_room(client, room, read_log):
+    room_a, room_b = room("a"), room("b")
+    with _ws(client, room_a) as a, _ws(client, room_a) as a_peer:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        a_peer.receive_text()
+
+    assert len(read_log(client, room_a)) == 2
+    assert read_log(client, room_b) == []
+
+
+def test_invalid_and_spoofed_messages_are_not_logged(client, room, read_log):
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(DELETE_CUBE))  # pins A's origin; the only one that should stay
+        assert json.loads(b.receive_text()) == DELETE_CUBE
+
+        bad = copy.deepcopy(MOVE_AND_ROTATE)
+        bad["ops"][0]["lamport"] = 0
+        for rejected in (bad, _as_origin(MOVE_AND_ROTATE, OTHER_ORIGIN)):
+            a.send_text(json.dumps(rejected))
+            assert json.loads(a.receive_text())["type"] == "error"
+
+        a.send_text(json.dumps(DELETE_CUBE))  # a marker, so the checks above have all finished
+        assert json.loads(b.receive_text()) == DELETE_CUBE
+        rows = read_log(client, room_id)
+
+    assert [row.kind for row in rows] == ["delete", "delete"]
+
+
+def test_lamport_too_big_for_the_log_is_invalid_not_a_database_error(client, room, caplog):
+    room_id = room()
+    huge = copy.deepcopy(DELETE_CUBE)
+    huge["ops"][0]["lamport"] = 2**63
+    with _ws(client, room_id) as a:
+        a.send_text(json.dumps(huge))
+        error = json.loads(a.receive_text())
+
+    assert error["type"] == "error"
+    assert "couldn't save" not in error["message"]
+    assert "append failed" not in caplog.text
+
+
+def test_failed_write_gets_a_generic_error_and_is_not_forwarded(client, room, read_log, caplog):
+    async def run(statement):
+        async with client.app.state.sessions() as session, session.begin():
+            await session.execute(text(statement))
+
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        client.portal.call(run, "ALTER TABLE operations RENAME TO operations_away")
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+
+        error = json.loads(a.receive_text())
+        assert error["type"] == "error"
+        assert "couldn't save" in error["message"]
+        for internal in ("operations", "sql", "table", "INSERT"):
+            assert internal.lower() not in error["message"].lower()
+        assert "append failed" in caplog.text
+        assert "operations" in caplog.text  # the details do reach the server's log
+
+        # The connection is still open; this is the first thing B has received at all.
+        client.portal.call(run, "ALTER TABLE operations_away RENAME TO operations")
+        a.send_text(json.dumps(DELETE_CUBE))
+        assert json.loads(b.receive_text()) == DELETE_CUBE
+        rows = read_log(client, room_id)
+
+    assert [row.kind for row in rows] == ["delete"]
+
+
+def test_two_clients_sending_at_once_are_all_saved(client, room, read_log):
+    # Two senders, so two simultaneous writers on separate database connections (D-066). A lock
+    # error would come back to a sender as an `error` and leave a hole in the log.
+    per_client = 100
+    room_id = room()
+    origin_a, origin_b = MOVE_AND_ROTATE["ops"][0]["origin"], OTHER_ORIGIN
+    replies: dict[str, list[dict]] = {}
+
+    def run_client(socket, name, origin):
+        def send():
+            for n in range(1, per_client + 1):
+                message = _as_origin(DELETE_CUBE, origin)
+                message["ops"][0]["lamport"] = n
+                socket.send_text(json.dumps(message))
+
+        sender = threading.Thread(target=send)
+        sender.start()
+        # Every message from the other client arrives here, or an `error` for one of our own.
+        replies[name] = [json.loads(socket.receive_text()) for _ in range(per_client)]
+        sender.join()
+
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        threads = [
+            threading.Thread(target=run_client, args=(a, "a", origin_a)),
+            threading.Thread(target=run_client, args=(b, "b", origin_b)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not any(thread.is_alive() for thread in threads)
+        rows = read_log(client, room_id)
+
+    assert [reply["type"] for reply in replies["a"] + replies["b"]] == ["ops"] * (per_client * 2)
+    assert len(rows) == per_client * 2
+    assert [row.seq for row in rows] == sorted({row.seq for row in rows})
+    # Per sender, the log keeps the order that sender sent in.
+    for origin in (origin_a, origin_b):
+        lamports = [row.lamport for row in rows if row.origin == origin]
+        assert lamports == list(range(1, per_client + 1))
 
 
 def test_three_clients_fan_out_to_the_other_two(client, room):

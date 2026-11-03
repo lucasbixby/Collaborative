@@ -9,7 +9,7 @@ conflicts resolve, and what is accepted from clients.
 | `clock.py` | Lamport clock: tick on local events, merge on receive, tie-break by origin ID. |
 | `validation.py` | `OriginRegistry`: which connection may send as which `origin`. Schema and size checks are in `operations.py`. **Done (#10).** |
 | `conflicts.py` | Last-writer-wins per (object, property) using Lamport order. CRDT-style merging later, if time allows. |
-| `log.py` | Append-only operation log per room, catch-up queries (`since=<lamport>`), snapshot compaction. |
+| `log.py` | Append-only operation log per room; `since` reads it by `seq`, the catch-up cursor. **Done (#19);** snapshot compaction comes with #20. |
 
 Tests live in `server/tests/sync/`. The convergence test (simulated concurrent
 clients end in identical state) is a success criterion in the proposal.

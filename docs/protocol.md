@@ -57,8 +57,8 @@ re-serialized from the parsed, validated message rather than the raw text (#11).
 ### `error`: a message was rejected
 
 Sent to the sender only, in reply to one message that failed validation — bad schema,
-unknown field, oversized, or any other rule under [Rules](#rules) below. The connection
-stays open: one bad message doesn't disconnect a client.
+unknown field, oversized, or any other rule under [Rules](#rules) below — or that the server
+couldn't save to its log. The connection stays open: one bad message doesn't disconnect a client.
 
 ```json
 {
@@ -83,7 +83,7 @@ on its own (D-025):
 |---|---|---|
 | `kind` | `"set"`, `"create"` or `"delete"` | What happened |
 | `object` | UUID string | The object's `collab_id` |
-| `lamport` | integer ≥ 1 | The sender's Lamport timestamp for this change |
+| `lamport` | integer from 1 to 2^63 − 1 | The sender's Lamport timestamp for this change |
 | `origin` | UUID string | The client that made the change |
 
 The pair (`lamport`, `origin`) is unique per operation, so it doubles as the operation's ID.
@@ -159,7 +159,8 @@ Only the common fields.
    `property`) — only a strictly newer one is applied; an older one, or a tie lost on
    `origin`, is skipped. Each client's own Lamport clock only ever moves forward: it ticks
    for its own edits and merges in (`max`) every timestamp it receives, and never resets,
-   not even across rejoining. Server-side ordering (a log and catch-up) is #19 and #21.
+   not even across rejoining. The server's log (#19) records arrival order as `seq`, which
+   is the catch-up cursor, not a conflict rule. Serving catch-up is #20; server ordering is #21.
 2. **Deletes win (D-026).** Once an object is deleted, later operations for it are ignored,
    whatever their timestamp. Clients remember deleted IDs (tombstones) so late-arriving
    operations stay ignored, including a `delete` for an ID they never had, whose `create` may
@@ -186,10 +187,11 @@ Only the common fields.
    carrying the latest value (D-019).
 7. **Undo and redo are not special.** The add-on compares the scene with its cache after undo or
    redo (D-020) and sends whatever differs as ordinary operations.
-8. **The relay forwards to everyone except the sender (#11).** A valid `ops` message goes to
+8. **The relay saves, then forwards to everyone except the sender (#11, #19).** A valid `ops`
+   message is appended to the room's operation log, one row per operation, and then goes to
    every other client currently in the room — never back to the sender, which has already
-   applied its own change locally. An invalid message gets an `error` reply instead, to the
-   sender only, and the connection stays open.
+   applied its own change locally. An invalid message, or one the server couldn't save, gets an
+   `error` reply instead, to the sender only: it isn't forwarded, and the connection stays open.
 
 9. **A `set` for an unknown object is dropped, not buffered (D-057).** Each client's messages
    reach others in the order it sent them and its `create` goes first (see `create`), so this
@@ -228,7 +230,7 @@ Tests on either side can validate example messages against it.
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     },
-    "lamport": { "type": "integer", "minimum": 1 },
+    "lamport": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
     "vec3": {
       "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
     },
