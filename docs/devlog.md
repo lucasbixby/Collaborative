@@ -27,9 +27,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
-| In progress | #15 Create / delete sync (in review; manual check open) |
-| Next up | #10 Origin validation, #19 Persist the operation log; then #20 Snapshots and catch-up |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check |
+| In progress | #10 Origin validation (in review) |
+| Next up | #19 Persist the operation log; then #20 Snapshots and catch-up |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -97,6 +97,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-059 | The client's size check measures the whole message with `json.dumps`, as `client.send` does | 11/03 | Active |
 | D-060 | Tombstones are cleared when a different file loads | 11/03 | Active |
 | D-061 | Incoming geometry goes through `mesh.validate()` | 11/03 | Active |
+| D-062 | The newest connection to claim an origin takes it over, rather than being rejected while the old one looks alive | 11/03 | Active |
+| D-063 | Origin checks aren't proof of identity: a live client can still claim another's origin until auth exists | 11/03 | Active |
+| D-064 | A connection that lost its origin stays open and pinned, getting `error` for anything it sends | 11/03 | Active |
 
 ## Log
 
@@ -723,3 +726,33 @@ back by Cmd+Z gets a new ID. Refs #15: stays open until the manual check is done
   server-side catch-up (#20), room permissions (#16 / #17). Only the client half of catch-up is
   tested so far (replaying a missed `create` + `delete`).
 - Loose edges aren't sent (no `edges` in the schema), so a Circle arrives as bare vertices.
+
+### 2026-11-03 · Validate incoming operations (#10)
+
+The relay now checks `origin`: every op in a message must share one, and `OriginRegistry`
+(`validation.py`) pins a connection to its origin on its first valid message. A rejected message
+gets the usual `error` reply (D-040), isn't relayed, and the connection stays open.
+
+| Decision | Why |
+|---|---|
+| D-062: The newest connection to claim an origin takes it over; the issue's plain "reject if another live connection has it" isn't used | The race is real. `room_socket` only learns a client left when `receive_text()` raises, which after a drop with no FIN waits for uvicorn's keepalive (default 20 s ping + 20 s timeout), while the add-on reconnected in under 0.1 s with the same origin. Measured with the real `client.py`, real uvicorn and a proxy that cuts only the client side: the server counted the old socket as connected, and plain rejection lost the reconnected client's edit (`error`, nothing relayed). The add-on only logs an `error`, so edits would vanish for up to ~40 s. Takeover relayed it. Rejected: an idle-time threshold (a client can reconnect milliseconds after its last send, and an idle live client looks stale). |
+| D-063: Takeover can't tell a reconnect from a spoof, and nothing here stops a second live client claiming an origin | Said plainly: **a client can copy an origin off any relayed op, send as it, and lock the real client out.** This closes accidental misuse and one connection hopping between origins, not deliberate impersonation within a room, and any client can join any room today. Only auth can fix it: tie an origin to a user (#16 / #17) and allow takeover only by the same user. Rejected for now: a liveness ping to the old connection before takeover, which needs a new message type and an add-on change (the issue says the add-on is unaffected), holds up the new connection's first message, and still proves nothing about who's asking. A takeover logs a `WARNING` so it's at least visible. |
+| D-064: The connection that lost an origin stays open and pinned; the server doesn't close it | Follows D-040, and a stale socket gets cleaned up by keepalive anyway. It can't claim the origin back or move to another, so one connection can't ping-pong. Rejected: closing it. The add-on auto-reconnects, so a spoofer and its victim would kick each other in a loop, and awaiting a close on a half-open socket can stall the relay on the close handshake. Cost: a real client locked out by a spoofer stays locked out until it rejoins, with only a terminal log line. |
+
+**Details:**
+- `check` raises `ValueError`, so origin rejections use the same `except` as `parse_message` and
+  one error path. An invalid message never pins, because parsing runs first.
+- `release` only frees the origin if that connection still holds it. Otherwise a stale socket
+  found dead 40 s later would free an origin the reconnected client is using, and that client's
+  next message would be refused.
+- Connections are keyed by `id(websocket)`, safe because `room_socket` keeps the socket alive
+  until after `release` runs in `finally`.
+- Mutation-checked: breaking each rule makes the suite fail, though three of them fail by hanging
+  a relay test (`receive_text` has no timeout), not with a clean assertion.
+
+**Open / follow-up:**
+- Tie origins to users when auth lands (#16 / #17), which closes D-063.
+- A message still in flight on the old socket when a takeover happens is refused, and nobody is
+  left to see the `error`, so that edit is lost. It needs the old socket's message to be processed
+  after the new one's, which is unlikely since it arrived first.
+- #19: append to the log only after these checks, so rejected messages are never logged.

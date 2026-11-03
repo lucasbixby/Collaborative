@@ -18,7 +18,7 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import settings
-from app.realtime.websocket import manager
+from app.realtime.websocket import manager, origins
 
 PROTOCOL_MD = Path(__file__).resolve().parents[3] / "docs" / "protocol.md"
 
@@ -34,6 +34,15 @@ EXAMPLES = _example_messages()
 MOVE_AND_ROTATE = EXAMPLES[0]  # a `set` batch: location + rotation
 CREATE_CUBE = EXAMPLES[1]
 DELETE_CUBE = EXAMPLES[2]
+OTHER_ORIGIN = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+
+
+def _as_origin(message, origin):
+    """A copy of `message` with every op claiming `origin`, as another client would send it."""
+    message = copy.deepcopy(message)
+    for op in message["ops"]:
+        op["origin"] = origin
+    return message
 
 
 def _ws(client, room_id):
@@ -70,13 +79,14 @@ def test_a_valid_batch_reaches_b_unchanged(client, room):
 def test_sender_never_gets_its_own_message_back(client, room):
     room_id = room()
     with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        from_b = _as_origin(CREATE_CUBE, OTHER_ORIGIN)
         a.send_text(json.dumps(MOVE_AND_ROTATE))
-        b.send_text(json.dumps(CREATE_CUBE))
+        b.send_text(json.dumps(from_b))
 
         # If A's own batch were echoed back, it would arrive before B's.
         received = json.loads(a.receive_text())
 
-    assert received == CREATE_CUBE
+    assert received == from_b
 
 
 def test_a_client_in_another_room_gets_nothing(client, room):
@@ -192,7 +202,129 @@ def test_largest_create_that_fits_is_relayed(client, room):
     with _ws(client, room_id) as a, _ws(client, room_id) as b:
         a.send_text(json.dumps(message))
 
-        assert json.loads(b.receive_text())["ops"][0]["mesh"]["vertices"] == [[0.5, 0.5, 0.5]] * count
+        assert (
+            json.loads(b.receive_text())["ops"][0]["mesh"]["vertices"] == [[0.5, 0.5, 0.5]] * count
+        )
+
+
+# -- Origin checks (#10) ------------------------------------------------------------------
+
+
+def test_spoofed_origin_gets_an_error_and_is_not_forwarded(client, room):
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))  # pins A's origin
+        assert json.loads(b.receive_text()) == MOVE_AND_ROTATE
+
+        a.send_text(json.dumps(_as_origin(MOVE_AND_ROTATE, OTHER_ORIGIN)))
+        error = json.loads(a.receive_text())
+        assert error["type"] == "error"
+        assert OTHER_ORIGIN in error["message"]
+
+        # The connection is still open, and this is the first thing B has received since.
+        a.send_text(json.dumps(DELETE_CUBE))
+        assert json.loads(b.receive_text()) == DELETE_CUBE
+
+
+def test_mixed_origin_batch_gets_an_error_and_does_not_pin(client, room):
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        mixed = copy.deepcopy(MOVE_AND_ROTATE)
+        mixed["ops"][1]["origin"] = OTHER_ORIGIN
+        a.send_text(json.dumps(mixed))
+        assert json.loads(a.receive_text())["type"] == "error"
+
+        # Neither of those origins got pinned, so A can still send as a third one.
+        third = _as_origin(DELETE_CUBE, "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+        a.send_text(json.dumps(third))
+        assert json.loads(b.receive_text()) == third
+
+
+def test_two_clients_with_different_origins_both_relay(client, room):
+    room_id = room()
+    from_b = _as_origin(DELETE_CUBE, OTHER_ORIGIN)
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        assert json.loads(b.receive_text()) == MOVE_AND_ROTATE
+        b.send_text(json.dumps(from_b))
+        assert json.loads(a.receive_text()) == from_b
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        assert json.loads(b.receive_text()) == MOVE_AND_ROTATE
+
+
+def test_reconnect_with_the_same_origin_after_a_clean_disconnect(client, room):
+    room_id = room()
+    with _ws(client, room_id) as b:
+        with _ws(client, room_id) as a:
+            a.send_text(json.dumps(MOVE_AND_ROTATE))
+            assert json.loads(b.receive_text()) == MOVE_AND_ROTATE
+
+        with _ws(client, room_id) as a_again:
+            a_again.send_text(json.dumps(DELETE_CUBE))
+            assert json.loads(b.receive_text()) == DELETE_CUBE
+
+
+def test_reconnect_while_the_old_socket_still_looks_alive(client, room, caplog):
+    # D-062: `stale` is never closed, exactly what the server sees when a network drops with
+    # no FIN. The add-on's new connection must work straight away, not after keepalive.
+    room_id = room()
+    with _ws(client, room_id) as b, _ws(client, room_id) as stale:
+        stale.send_text(json.dumps(MOVE_AND_ROTATE))
+        assert json.loads(b.receive_text()) == MOVE_AND_ROTATE
+
+        with _ws(client, room_id) as reconnected:
+            reconnected.send_text(json.dumps(CREATE_CUBE))
+            assert json.loads(b.receive_text()) == CREATE_CUBE
+            assert "origin takeover" in caplog.text
+
+            # They never share it: the old connection is refused, and stays open (D-064).
+            assert json.loads(stale.receive_text()) == CREATE_CUBE  # still gets broadcasts
+            stale.send_text(json.dumps(MOVE_AND_ROTATE))
+            assert json.loads(stale.receive_text())["type"] == "error"
+
+            reconnected.send_text(json.dumps(DELETE_CUBE))
+            assert json.loads(b.receive_text()) == DELETE_CUBE  # the refused one wasn't relayed
+
+
+def test_old_socket_dying_after_a_takeover_leaves_the_new_connection_working(client, room):
+    room_id = room()
+    with _ws(client, room_id) as b, _ws(client, room_id) as reconnected:
+        with _ws(client, room_id) as stale:
+            stale.send_text(json.dumps(MOVE_AND_ROTATE))
+            assert json.loads(b.receive_text()) == MOVE_AND_ROTATE
+            reconnected.send_text(json.dumps(CREATE_CUBE))
+            assert json.loads(b.receive_text()) == CREATE_CUBE
+        # `stale`'s release ran when it closed. Had it freed the origin, this would be
+        # refused, because `reconnected` no longer holds it.
+        reconnected.send_text(json.dumps(DELETE_CUBE))
+        assert json.loads(b.receive_text()) == DELETE_CUBE
+
+
+def test_disconnect_releases_the_origin(client, room):
+    room_id = room()
+    with _ws(client, room_id) as a:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        a.send_text(json.dumps(_as_origin(MOVE_AND_ROTATE, OTHER_ORIGIN)))
+        assert json.loads(a.receive_text())["type"] == "error"  # so the pin has happened
+        assert [key for key in origins._holders if key[0] == room_id]
+
+    assert not [key for key in origins._holders if key[0] == room_id]
+    assert not [key for key in origins._pins if key[0] == room_id]
+
+
+def test_an_unexpected_exception_cannot_leak_a_pinned_origin(client, room, monkeypatch):
+    async def broken_broadcast(*_args, **_kwargs):
+        raise RuntimeError("broadcast failed")
+
+    monkeypatch.setattr(manager, "broadcast", broken_broadcast)
+    room_id = room()
+
+    with pytest.raises(RuntimeError, match="broadcast failed"), _ws(client, room_id) as a:
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        a.receive_text()
+
+    assert not [key for key in origins._pins if key[0] == room_id]
+    assert not [key for key in origins._holders if key[0] == room_id]
 
 
 def test_three_clients_fan_out_to_the_other_two(client, room):
