@@ -5,7 +5,7 @@ import json
 import bpy
 from bpy.app.handlers import persistent
 
-from . import apply, client, detect, panel
+from . import apply, client, detect, ordering, panel
 from .log import log
 
 
@@ -58,10 +58,15 @@ def _leave_room() -> None:
 @persistent
 def _on_load_pre(*_args) -> None:
     """Opening another file would otherwise leave the client connected while detect's
-    cache and the scene's `collab_id`s still belong to the file being replaced (#13)."""
+    cache and the scene's `collab_id`s still belong to the file being replaced (#13).
+
+    Tombstones belong to that file too (#15): reopening a saved `.blend` legitimately brings
+    back objects deleted since it was saved, and they must keep their IDs (D-045).
+    """
     if client.status() != "disconnected":
         log("leaving the room: a different file is being opened")
     _leave_room()
+    ordering.tombstones.clear()
 
 
 class COLLAB_OT_apply_from_clipboard(bpy.types.Operator):

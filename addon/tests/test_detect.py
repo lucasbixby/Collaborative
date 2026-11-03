@@ -52,7 +52,8 @@ def sent(addon):
 def test_move_emits_one_set_location(sent):
     obj = _add_cube()
     _settle()
-    detect.flush()  # new object: enters the cache silently (no `create` op, #15)
+    detect.flush()  # new object: sends its `create`, returns no batch
+    sent.clear()
 
     obj.location = (1.0, 2.0, 3.0)
     _settle()
@@ -70,6 +71,7 @@ def test_setting_the_same_value_emits_nothing(sent):
     obj = _add_cube()
     _settle()
     detect.flush()
+    sent.clear()
 
     obj.location = tuple(obj.location)  # a write, but not an actual change
     _settle()
@@ -165,6 +167,7 @@ def test_custom_property_change_emits_nothing(sent):
     obj = _add_cube()
     _settle()
     detect.flush()
+    sent.clear()
 
     obj["some_flag"] = 1
     _settle()
@@ -177,7 +180,7 @@ def test_new_object_gets_an_id_and_later_moves_emit_ops(sent):
     obj = _add_cube()
     _settle()
 
-    assert detect.flush() is None  # enters the cache silently
+    assert detect.flush() is None  # only a `create` went out, so no batch to return
     collab_id = ids.get_id(obj)
     assert collab_id is not None
 
@@ -190,24 +193,14 @@ def test_new_object_gets_an_id_and_later_moves_emit_ops(sent):
     assert op["value"] == [5.0, 5.0, 5.0]
 
 
-def test_deleted_object_leaves_the_cache_without_errors(sent):
-    obj = _add_cube()
-    _settle()
-    detect.flush()
-
-    bpy.data.objects.remove(obj)
-    _settle()
-
-    assert detect.flush() is None  # no `delete` op (out of scope, #15); just drops silently
-
-
 def test_suppressed_flushes_pending_local_edits_first(sent):
     # Bug from the #5 review: a local edit still waiting for its 50 ms tick must not be
     # absorbed into the cache (and lost) by a remote operation applied inside suppressed().
     a = _add_cube("A")
     b = _add_cube("B")
     _settle()
-    detect.flush()  # both enter the cache silently
+    detect.flush()  # both enter the cache
+    sent.clear()
 
     a.location = (5.0, 0.0, 0.0)
     _settle()
@@ -226,6 +219,7 @@ def test_changes_inside_suppressed_emit_nothing(sent):
     obj = _add_cube()
     _settle()
     detect.flush()
+    sent.clear()
     collab_id = ids.get_id(obj)
 
     with detect.suppressed():
@@ -264,7 +258,7 @@ def test_lamport_clock_keeps_counting_up_across_stop_and_start(addon):
 
     messages = []
     detect.start(messages.append)
-    detect.flush()  # enters the cache silently
+    detect.flush()  # enters the cache
     obj.location = (1.0, 0.0, 0.0)
     _settle()
     first = detect.flush()

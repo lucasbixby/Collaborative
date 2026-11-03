@@ -132,11 +132,18 @@ updates don't say what kind of object was added.
 | `object_type` | `"MESH"` | Only meshes for now; cameras, lights and empties come later |
 | `collection` | string | Name of the collection it belongs to (`"Scene Collection"` is the scene's top level) |
 | `transform` | `{"location": [3], "rotation": {...}, "scale": [3]}` | Same value shapes as `set` |
-| `mesh.vertices` | array of `[x, y, z]` | Vertex positions in the object's local space |
+| `mesh.vertices` | array of `[x, y, z]` | Vertex positions in the object's local space, rounded to 6 decimals |
 | `mesh.faces` | array of arrays of vertex indices, at least 3 per face | Faces, as indices into `mesh.vertices` |
 
-Plus the common fields. Duplicating an object (Shift+D) is sent as a `create` with a new
-`collab_id`.
+Plus the common fields. Duplicating an object (Shift+D, Alt+D) is sent as a `create` with a new
+`collab_id`. The mesh is the base mesh, not the evaluated one: modifiers aren't synced.
+
+**One `create` per message (#15).** Each `create` is sent as its own `ops` message, ahead of
+the batch carrying that flush's `set`s and `delete`s. A big mesh then can't push the batch over
+the size limit, and a receiver sees an object's `create` before any `set` for it. A `create`
+whose message would exceed 64 KiB isn't sent at all (#27). The receiver links the object into
+the named collection if this scene has one, otherwise the scene's top level, and Blender may
+rename it (`Cube.001`) if the name is taken.
 
 ### `delete`: an object was removed
 
@@ -153,9 +160,13 @@ Only the common fields.
    `origin`, is skipped. Each client's own Lamport clock only ever moves forward: it ticks
    for its own edits and merges in (`max`) every timestamp it receives, and never resets,
    not even across rejoining. Server-side ordering (a log and catch-up) is #19 and #21.
-2. **Deletes win (D-026).** Once an object is deleted, later `set` operations for it are
-   ignored. Receivers remember deleted IDs (tombstones) so late-arriving operations stay ignored.
-3. **Creates are idempotent.** A `create` for an ID that already exists is ignored.
+2. **Deletes win (D-026).** Once an object is deleted, later operations for it are ignored,
+   whatever their timestamp. Clients remember deleted IDs (tombstones) so late-arriving
+   operations stay ignored, including a `delete` for an ID they never had, whose `create` may
+   still arrive. An ID is never reused: an object that comes back (Cmd+Z after a delete) gets
+   a **new** `collab_id` and is sent as a new `create` (#15).
+3. **Creates and deletes are idempotent.** A `create` for an ID that already exists or is
+   tombstoned is ignored, and a repeated `delete` changes nothing.
 4. **Strict validation (#10).** A message is rejected if it doesn't match the schema below,
    including any unknown field, property or rotation mode. Beyond the schema, receivers also
    check: face indices are less than the number of vertices; the whole message fits in 64 KiB;
@@ -171,11 +182,18 @@ Only the common fields.
    applied its own change locally. An invalid message gets an `error` reply instead, to the
    sender only, and the connection stays open.
 
+9. **A `set` for an unknown object is dropped, not buffered (D-057).** Each client's messages
+   reach others in the order it sent them and its `create` goes first (see `create`), so this
+   only happens to a client that missed the `create`. The object, if it arrives later, has the
+   `create`'s values.
+
 ## Not synced yet
 
 - Moving an object to another collection after it's created
 - Mesh edits after creation (stretch goal #26) and meshes over the size limit (#27)
-- Cameras, lights, empties, materials, modifiers, parenting
+- Cameras, lights, empties, materials, modifiers, parenting. A new non-mesh object is logged as
+  `not synced yet` and sends no `create`
+- Loose edges: `create` carries only vertices and faces, so a Circle arrives as bare vertices
 - Selection, viewport and other per-user state (never synced)
 
 ## JSON Schema

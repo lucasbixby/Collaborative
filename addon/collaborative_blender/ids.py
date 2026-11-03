@@ -26,6 +26,13 @@ def find_object(collab_id: str) -> bpy.types.Object | None:
     return None
 
 
+def assign_new_id(obj: bpy.types.Object) -> str:
+    """Give `obj` a fresh `collab_id`, replacing any it had, and return it."""
+    collab_id = str(uuid.uuid4())
+    obj[COLLAB_ID] = collab_id
+    return collab_id
+
+
 def ensure_ids() -> list[bpy.types.Object]:
     """Give every scene object a `collab_id`. Returns the objects that got a new one.
 
@@ -50,6 +57,6 @@ def ensure_ids() -> list[bpy.types.Object]:
             new_ids.extend(holders[1:])
 
     for obj in new_ids:
-        obj[COLLAB_ID] = str(uuid.uuid4())
+        assign_new_id(obj)
 
     return new_ids

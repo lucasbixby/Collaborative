@@ -11,6 +11,11 @@ clients open the same saved `.blend` file first — see addon/README.md.
 Last-writer-wins (#8 / #9): an incoming `set` is only applied if it's newer than the
 last value this client sent or applied for that key, via the shared clock and `Versions`
 in `ordering.py`.
+
+Create / delete (#15): `create` builds a mesh object and `delete` removes one, both idempotent.
+A deleted ID stays tombstoned (`ordering.tombstones`), so any later operation for it is
+skipped whatever its timestamp: deletes win (protocol rule 2). A `set` for an object this
+client doesn't have is dropped, not buffered (protocol rule 9).
 """
 
 import bpy
@@ -51,21 +56,92 @@ _SETTERS = {
 }
 
 
+def _target_collection(name: object) -> bpy.types.Collection:
+    """The collection in this scene called `name`, or the scene's top level if there's none.
+    Only this scene's: an object linked anywhere else wouldn't be in `scene.objects`."""
+    scene = bpy.context.scene
+    for collection in scene.collection.children_recursive:
+        if collection.name == name:
+            return collection
+    return scene.collection
+
+
+def _apply_create(op: dict, objects: dict[str, bpy.types.Object]) -> None:
+    """Build the object `op` describes, unless it exists already or has been deleted."""
+    collab_id = op.get("object")
+    if collab_id in objects or collab_id in ordering.tombstones:
+        log("apply: skip, create for existing or deleted object", collab_id)
+        return
+    if op.get("object_type") != "MESH":
+        log("apply: skip, create for object type", op.get("object_type"))
+        return
+
+    mesh = None
+    obj = None
+    try:
+        mesh = bpy.data.meshes.new(op["name"])
+        mesh.from_pydata(op["mesh"]["vertices"], [], op["mesh"]["faces"])
+        mesh.validate()  # untrusted geometry: the schema allows a face like [0, 0, 0]
+        mesh.update()
+        obj = bpy.data.objects.new(op["name"], mesh)
+        for prop in ("location", "rotation", "scale"):
+            _SETTERS[prop](obj, op["transform"][prop])
+        obj[ids.COLLAB_ID] = collab_id
+        _target_collection(op["collection"]).objects.link(obj)
+    except Exception as exc:  # noqa: BLE001 - a malformed create must not crash the batch
+        log("apply: skip, create raised", collab_id, exc)
+        if obj is not None:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh is not None:
+            bpy.data.meshes.remove(mesh)
+        return
+    objects[collab_id] = obj
+
+
+def _apply_delete(op: dict, objects: dict[str, bpy.types.Object]) -> None:
+    """Tombstone the ID, even if this client never had the object (the `create` might still
+    be on its way), then remove the object and any mesh left without users."""
+    collab_id = op.get("object")
+    ordering.tombstones.add(collab_id)
+    obj = objects.pop(collab_id, None)
+    if obj is None:
+        return
+    data = obj.data
+    bpy.data.objects.remove(obj, do_unlink=True)
+    if isinstance(data, bpy.types.Mesh) and data.users == 0:
+        bpy.data.meshes.remove(data)
+
+
 def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | None) -> None:
     """Apply one operation to `objects` (keyed by `collab_id`), or skip it and log why.
 
-    Never raises: an unknown object / kind / property is skipped, and so is a `set` that
-    arrives older than the last value this client sent or applied for that
-    (`object`, `property`) key (last-writer-wins, #8 / #9), or whose setter itself raises
-    (a value that's schema-valid JSON but not a value Blender accepts).
+    Never raises: an unknown object / kind / property is skipped, and so is a `set` for a
+    deleted object, a `set` that arrives older than the last value this client sent or applied
+    for that (`object`, `property`) key (last-writer-wins, #8 / #9), or one whose setter itself
+    raises (a value that's schema-valid JSON but not a value Blender accepts).
     """
     if not isinstance(op, dict):
         log("apply: skip, operation is not an object")
         return
     if op.get("origin") == own_origin:
         return  # the relay never echoes a client's own ops, but be defensive
-    if op.get("kind") != "set":
-        log("apply: skip, kind", op.get("kind"))  # create / delete are #15
+    if not isinstance(op.get("object"), str):
+        log("apply: skip, object ID is not a string")
+        return
+    kind = op.get("kind")
+    if kind in ("create", "delete"):
+        if isinstance(op.get("lamport"), int):
+            ordering.clock.observe(op["lamport"])
+        if kind == "create":
+            _apply_create(op, objects)
+        else:
+            _apply_delete(op, objects)
+        return
+    if kind != "set":
+        log("apply: skip, kind", kind)
+        return
+    if op.get("object") in ordering.tombstones:
+        log("apply: skip, object was deleted", op.get("object"))
         return
     setter = _SETTERS.get(op.get("property"))
     if setter is None:
