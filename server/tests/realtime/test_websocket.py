@@ -126,6 +126,75 @@ def test_oversized_message_gets_an_error_and_connection_stays_open(client, room)
     assert received == DELETE_CUBE
 
 
+def _create_with_bad(**changes):
+    """The example `create`, with some of its fields replaced."""
+    message = copy.deepcopy(CREATE_CUBE)
+    message["ops"][0].update(changes)
+    return message
+
+
+def _create_without(field):
+    message = copy.deepcopy(CREATE_CUBE)
+    del message["ops"][0][field]
+    return message
+
+
+def _create_with_vertices(count):
+    message = copy.deepcopy(CREATE_CUBE)
+    message["ops"][0]["mesh"] = {"vertices": [[0.5, 0.5, 0.5]] * count, "faces": []}
+    return message
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _create_with_bad(object_type="EMPTY"),
+        _create_with_bad(object="Cube"),
+        _create_with_bad(mesh={"vertices": [[0, 0, 0]], "faces": [[0, 1, 2]]}),
+        _create_with_bad(mesh={"vertices": [[0, 0]], "faces": []}),
+        _create_with_bad(parent="9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"),
+        _create_without("mesh"),
+        _create_without("transform"),
+        _create_with_vertices(5000),  # valid but oversized
+    ],
+    ids=[
+        "non-mesh-type",
+        "name-as-id",
+        "face-index-out-of-range",
+        "short-vertex",
+        "unknown-field",
+        "no-mesh",
+        "no-transform",
+        "oversized",
+    ],
+)
+def test_bad_create_gets_an_error_and_is_not_forwarded(client, room, bad):
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(bad))
+
+        assert json.loads(a.receive_text())["type"] == "error"
+
+        # If the bad create had been forwarded, it would arrive before this.
+        a.send_text(json.dumps(DELETE_CUBE))
+        assert json.loads(b.receive_text()) == DELETE_CUBE
+
+
+def test_largest_create_that_fits_is_relayed(client, room):
+    # The add-on measures a `create` with `json.dumps` before sending (detect.py); that
+    # number must agree with the limit enforced here, or it would send what's refused here.
+    count = 1
+    while len(json.dumps(_create_with_vertices(count + 1))) <= settings.max_operation_bytes:
+        count += 1
+    message = _create_with_vertices(count)
+
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_text(json.dumps(message))
+
+        assert json.loads(b.receive_text())["ops"][0]["mesh"]["vertices"] == [[0.5, 0.5, 0.5]] * count
+
+
 def test_three_clients_fan_out_to_the_other_two(client, room):
     room_id = room()
     with _ws(client, room_id) as a, _ws(client, room_id) as b, _ws(client, room_id) as c:

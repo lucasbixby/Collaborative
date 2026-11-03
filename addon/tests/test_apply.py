@@ -133,7 +133,7 @@ def test_unknown_object_id_is_skipped_rest_of_batch_still_applies(addon):
     assert tuple(obj.location) == pytest.approx((1.0, 2.0, 3.0))
 
 
-def test_create_delete_unknown_kind_and_property_are_skipped_without_raising(addon):
+def test_malformed_create_delete_unknown_kind_and_property_are_skipped_without_raising(addon):
     obj = _add_cube()
     ids.ensure_ids()
     collab_id = ids.get_id(obj)
@@ -180,6 +180,7 @@ def test_apply_then_flush_sends_nothing(sent):
     obj = _add_cube()
     _settle()
     detect.flush()  # enters the cache
+    sent.clear()
 
     op = _set_op(ids.get_id(obj), "location", [4.0, 4.0, 4.0])
     apply.apply_message(_ops_message(op))
@@ -196,6 +197,7 @@ def test_pending_local_edit_still_sent_when_remote_batch_applied(sent):
     b = _add_cube("B")
     _settle()
     detect.flush()  # both enter the cache
+    sent.clear()
 
     a.location = (5.0, 0.0, 0.0)  # local edit, not yet flushed
     _settle()

@@ -27,8 +27,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
-| In progress | — |
-| Next up | #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log; then #20 Snapshots and catch-up |
+| In progress | #15 Create / delete sync (in review; manual check open) |
+| Next up | #10 Origin validation, #19 Persist the operation log; then #20 Snapshots and catch-up |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check |
 | Loose ends | Adjust Last Operation spike item |
 
@@ -69,7 +69,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-031 | Object IDs live in the custom property `obj["collab_id"]`, a lowercase uuid4 string | 10/20 | Active |
 | D-032 | Duplicate IDs are resolved by `session_uid`: the lowest keeps the ID, the rest get new ones | 10/20 | Active |
 | D-033 | Detection handlers only set a dirty flag; a 50 ms timer diffs the whole scene against a cache keyed by `collab_id` | 10/20 | Active |
-| D-034 | A new object enters the cache silently (no op for its initial state); a deleted object silently leaves it | 10/20 | Active |
+| D-034 | A new object enters the cache silently (no op for its initial state); a deleted object silently leaves it | 10/20 | Superseded by #15 |
 | D-035 | `suppressed()` refreshes the cache from the scene on exit, without emitting | 10/20 | Active |
 | D-036 | Start / Stop detection button in the panel logs batches as JSON until Join room (#13) exists | 10/20 | Active |
 | D-037 | `jsonschema` added as a dev dependency so a contract test validates emitted messages against protocol.md's schema directly | 10/20 | Active |
@@ -92,6 +92,11 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-054 | A ~0.25 s main-thread timer compares `client.status()` and `tag_redraw()`s `VIEW_3D` areas only when it changes | 10/22 | Active |
 | D-055 | A `load_pre` handler leaves the current room before a different file loads | 10/22 | Active |
 | D-056 | Start / Stop detection dev aids (D-036) removed; Join / Leave replace them | 10/22 | Active |
+| D-057 | A `set` for an object this client doesn't have is dropped, not buffered | 11/03 | Active |
+| D-058 | Objects that can't be sent (non-mesh, too large) stay in the cache, so they're logged once and not retried | 11/03 | Active |
+| D-059 | The client's size check measures the whole message with `json.dumps`, as `client.send` does | 11/03 | Active |
+| D-060 | Tombstones are cleared when a different file loads | 11/03 | Active |
+| D-061 | Incoming geometry goes through `mesh.validate()` | 11/03 | Active |
 
 ## Log
 
@@ -676,3 +681,45 @@ designs in the issues: #15 (create / delete, including a new ID for objects brou
 undo, so tombstones stay correct), #10 (pin `origin` per connection), #19 (SQLite operation
 log, with the server's arrival `seq` as the catch-up cursor). #20 builds on #15 and #19 and
 removes the shared-`.blend` requirement (D-045).
+
+### 2026-11-03 · Sync object create and delete (#15)
+
+Adding, duplicating and deleting mesh objects now syncs. `flush()` sends a `create` for an ID
+it hasn't seen and a `delete` for one that's gone, replacing D-034; `apply.py` rebuilds and
+removes objects. Deleted IDs are tombstoned in one set in `ordering.py`, and an object brought
+back by Cmd+Z gets a new ID. Refs #15: stays open until the manual check is done.
+
+| Decision | Why |
+|---|---|
+| D-057: A `set` for an unknown object is dropped, not buffered (protocol rule 9) | A sender's `create` always goes first over one ordered connection, so only a client that missed the `create` sees this, and buffering wouldn't help: #20 has to recover that client anyway. A buffer would also need a timeout and a size limit. Rejected: buffering briefly. |
+| D-058: Non-mesh and too-large objects stay in the cache | Otherwise they'd look new on every flush, retrying and logging forever. Side effect: their `set`s and `delete` are still sent. Receivers without the object skip the `set`s, and a `delete` there just records a tombstone. Objects from the shared `.blend` (a camera, say) do exist on both sides, so their `delete` has to keep working. |
+| D-059: The size check measures the whole message with `json.dumps` | That's exactly what `client.send` puts on the wire and the relay measures, so the two can't disagree. A server test finds the largest `create` that fits and confirms the relay accepts it. |
+| D-060: `_on_load_pre` clears tombstones | Found while designing this: with D-045's shared `.blend`, reopening the file legitimately brings a deleted object back under its old ID. If the tombstone survived, the first flush would re-ID it on both clients and send two `create`s, duplicating it. |
+| D-061: `apply` calls `mesh.validate()` on incoming geometry | The schema checks that face indices are in range but allows a face like `[0, 0, 1]`, and geometry from the network is untrusted. It leaves valid meshes unchanged. |
+
+**Details:**
+- `flush()` returns only the `set` / `delete` batch; a flush that only sends `create`s returns
+  None. Existing tests that assumed a silent add now clear `sent` after the first flush.
+- `_retire_tombstoned_ids()` runs at the start of `flush()`, and also removes the old ID from
+  the cache so no second `delete` goes out. Join's snapshot stays silent, so an object undeleted
+  while out of the room is picked up by the first flush after joining.
+- Verified headless, in one-off scripts: removing an object in Edit Mode is safe (Blender drops
+  to Object Mode); real `primitive_*_add`, `duplicate_move`, `duplicate_move_linked`,
+  `object.delete` and `ed.undo` behave as designed, and those `create`s pass the server's
+  `parse_message`. A UV sphere (482 vertices) or Suzanne is about 26 KB.
+- The server already validated `create` / `delete` and the size limit (#7 / #11), so it only
+  gained tests. Mutation-checked: breaking each tombstone, idempotency, size and non-mesh rule
+  in turn makes a test fail.
+
+**Open / follow-up:**
+- Manual check (Lucas): see the PR.
+- **Undo reaches other people's objects.** Blender's undo restores the whole scene, and rule 7
+  sends whatever differs. Confirmed headless: with a remote object applied since the last undo
+  step, Cmd+Z removes it locally and sends a `delete`, so it's gone for everyone, permanently.
+  `set`s already behaved this way, but a delete can't be undone by anyone else. Needs a decision.
+- Batches aren't split: a `set` / `delete` batch over 64 KiB (roughly 500 deletes at once) is
+  rejected whole by the relay, and the sender has already tombstoned those IDs, so they diverge.
+- Prompt items that depend on later issues: op log (#19), tombstones in server state and
+  server-side catch-up (#20), room permissions (#16 / #17). Only the client half of catch-up is
+  tested so far (replaying a missed `create` + `delete`).
+- Loose edges aren't sent (no `edges` in the schema), so a Circle arrives as bare vertices.

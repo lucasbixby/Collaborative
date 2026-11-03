@@ -2,15 +2,17 @@
 
 Design (issue #5): handlers only set a dirty flag; a ~50 ms timer does the real work. When
 dirty, `flush()` calls `ids.ensure_ids()`, then diffs every scene object against a cache
-keyed by `collab_id`, turns each changed property into a `set` operation, and sends the
-batch. One mechanism covers drags, renames, undo/redo and new objects, since nothing holds
-object references across undo (D-018 to D-021).
+keyed by `collab_id`, turns each changed property into a `set` operation, an ID it hasn't
+seen into a `create` and a missing ID into a `delete` (#15), and sends them. One mechanism
+covers drags, renames, undo/redo, adds and deletes, since nothing holds object references
+across undo (D-018 to D-021).
 
 Changes caused by applying a remote operation go through `suppressed()` (see apply.py, #6)
 to avoid echoing them back out as if they were local edits. Each emitted op's Lamport
 timestamp comes from the shared clock in `ordering.py` (#8), not a counter of its own.
 """
 
+import json
 import uuid
 from contextlib import contextmanager
 
@@ -18,9 +20,14 @@ import bpy
 from bpy.app.handlers import persistent
 
 from . import ids, ordering
+from .log import log
 
 INTERVAL = 0.05  # 50 ms (D-019)
-_TRACKED_PROPERTIES = ("location", "rotation", "scale", "name")
+MAX_MESSAGE_BYTES = 64 * 1024  # the relay's limit (docs/protocol.md, COLLAB_MAX_OPERATION_BYTES)
+SCENE_COLLECTION = "Scene Collection"  # how protocol.md names the scene's top level
+VERTEX_DECIMALS = 6  # keeps `create` messages small
+_TRANSFORM_PROPERTIES = ("location", "rotation", "scale")
+_TRACKED_PROPERTIES = (*_TRANSFORM_PROPERTIES, "name")
 
 _active = False
 _dirty = False
@@ -55,7 +62,7 @@ def _read_object(obj: bpy.types.Object) -> dict[str, object]:
 
 def _snapshot() -> dict[str, dict[str, object]]:
     """Tracked values for every scene object, keyed by `collab_id`. Assigns IDs first,
-    so a brand-new object is in the result (and enters the cache) even before it moves."""
+    so a brand-new object is in the result even before it moves."""
     ids.ensure_ids()
     return {ids.get_id(obj): _read_object(obj) for obj in bpy.context.scene.objects}
 
@@ -82,27 +89,102 @@ def _make_op(collab_id: str, prop: str, value: object) -> dict:
     }
 
 
-def flush() -> dict | None:
-    """If dirty, diff the scene against the cache and send any changes as one `ops` batch.
+def _make_delete_op(collab_id: str) -> dict:
+    ordering.tombstones.add(collab_id)
+    return {
+        "kind": "delete",
+        "object": collab_id,
+        "lamport": ordering.clock.tick(),
+        "origin": _origin,
+    }
 
-    Returns the message that was sent, or None if nothing changed. A plain function (not
-    the timer callback itself), so headless tests can call it directly; `bpy.app.timers`
-    don't run without Blender's own event loop.
+
+def _collection_name(obj: bpy.types.Object) -> str:
+    collection = obj.users_collection[0]
+    if collection == bpy.context.scene.collection:
+        return SCENE_COLLECTION
+    return collection.name
+
+
+def _make_create_op(obj: bpy.types.Object, collab_id: str, values: dict[str, object]) -> dict:
+    """Everything another client needs to rebuild `obj`. Reads the base mesh, not the
+    evaluated one, since modifiers aren't synced."""
+    return {
+        "kind": "create",
+        "object": collab_id,
+        "lamport": ordering.clock.tick(),
+        "origin": _origin,
+        "name": values["name"],
+        "object_type": "MESH",
+        "collection": _collection_name(obj),
+        "transform": {prop: _op_value(prop, values[prop]) for prop in _TRANSFORM_PROPERTIES},
+        "mesh": {
+            "vertices": [
+                [round(coordinate, VERTEX_DECIMALS) for coordinate in vertex.co]
+                for vertex in obj.data.vertices
+            ],
+            "faces": [list(polygon.vertices) for polygon in obj.data.polygons],
+        },
+    }
+
+
+def _send_create(obj: bpy.types.Object, collab_id: str, values: dict[str, object]) -> None:
+    """Send a new object's `create` as its own message, or log why it can't be.
+
+    Either way the object stays in the cache, so this runs once per object, not every flush.
+    """
+    if obj.type != "MESH":
+        log("not synced yet:", obj.name, obj.type)
+        return
+    message = {"v": 1, "type": "ops", "ops": [_make_create_op(obj, collab_id, values)]}
+    # Measured the way client.send serializes it, so this agrees with the relay's own check.
+    size = len(json.dumps(message).encode("utf-8"))
+    if size > MAX_MESSAGE_BYTES:
+        log(f"too large to sync (#27): {obj.name}, {size} bytes")
+        return
+    _send(message)
+
+
+def _retire_tombstoned_ids() -> None:
+    """Give a new ID to any object carrying a tombstoned one, which is how Cmd+Z brings a
+    deleted object back. Every receiver ignores the old ID forever (protocol rule 2), so the
+    object has to come back as a new one; it then isn't in the cache, so it gets a `create`."""
+    for obj in bpy.context.scene.objects:
+        collab_id = ids.get_id(obj)
+        if collab_id in ordering.tombstones:
+            ids.assign_new_id(obj)
+            _cache.pop(collab_id, None)
+
+
+def flush() -> dict | None:
+    """If dirty, diff the scene against the cache and send the changes.
+
+    Each `create` goes out as its own message, ahead of one batch of this flush's `set`s and
+    `delete`s: a big mesh can't push the batch over the size limit, and a receiver always
+    sees an object's `create` before any `set` for it.
+
+    Returns the `set` / `delete` batch, or None if there wasn't one (a flush that only sends
+    `create`s returns None). A plain function (not the timer callback itself), so headless
+    tests can call it directly; `bpy.app.timers` don't run without Blender's own event loop.
     """
     global _dirty, _cache
     if not _dirty:
         return None
     _dirty = False
 
+    _retire_tombstoned_ids()
     current = _snapshot()
+    objects = {ids.get_id(obj): obj for obj in bpy.context.scene.objects}
     ops = []
     for collab_id, values in current.items():
         previous = _cache.get(collab_id)
         if previous is None:
-            continue  # a new object enters the cache silently; #15 sends `create` for it
+            _send_create(objects[collab_id], collab_id, values)
+            continue
         for prop in _TRACKED_PROPERTIES:
             if values[prop] != previous[prop]:
                 ops.append(_make_op(collab_id, prop, values[prop]))
+    ops.extend(_make_delete_op(collab_id) for collab_id in _cache if collab_id not in current)
     _cache = current
 
     if not ops:

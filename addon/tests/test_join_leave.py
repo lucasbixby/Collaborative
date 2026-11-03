@@ -110,6 +110,16 @@ def test_load_pre_leaves_the_room(addon, relay):
     assert not addon.detect._active
 
 
+def test_load_pre_forgets_tombstones(addon):
+    # They belong to the file being replaced (#15): reopening the saved `.blend` brings
+    # deleted objects back legitimately, under their old IDs.
+    addon.ordering.tombstones.add("11111111-1111-1111-1111-111111111111")
+
+    addon.operators._on_load_pre()
+
+    assert addon.ordering.tombstones == set()
+
+
 def test_status_text_for_each_state():
     from collaborative_blender import panel
 

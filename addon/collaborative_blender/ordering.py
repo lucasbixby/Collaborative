@@ -4,6 +4,10 @@ Pure Python, no `bpy`, so it's unit-testable on its own. `detect.py` stamps its 
 operations with `clock.tick()` and records them in `versions`; `apply.py` merges an
 incoming operation's timestamp with `clock.observe()` and checks it against `versions`
 before applying it. One shared clock and one shared `Versions`, used by both.
+
+`tombstones` is the same idea for deletes (protocol rule 2, #15): the `collab_id`s this
+client has deleted or seen deleted. `detect.py` adds its own deletes, `apply.py` adds remote
+ones, and an ID in here is never used again.
 """
 
 OpId = tuple[int, str]  # (lamport, origin): unique per operation, and its ordering key
@@ -54,3 +58,4 @@ class Versions:
 
 clock = LamportClock()
 versions = Versions()
+tombstones: set[str] = set()
