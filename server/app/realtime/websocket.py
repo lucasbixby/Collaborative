@@ -5,7 +5,8 @@ beyond arrival order (#8 / #9), no persistence (#19). A room exists only while a
 one client is in it.
 
 Flow for each incoming message:
-  1. `parse_message` (app.sync.operations) checks size and schema.
+  1. `parse_message` (app.sync.operations) checks size and schema, then `origins`
+     (app.sync.validation) checks this connection may send as that origin (#10).
   2. Valid: broadcast `serialize_message(parsed)` to every other client in the room, never
      back to the sender, which has already applied its own change. The re-serialized
      message is forwarded rather than the raw text, so only validated content leaves the
@@ -21,12 +22,14 @@ import re
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.sync.operations import parse_message, serialize_message
+from app.sync.validation import OriginRegistry
 
 from .connections import ConnectionManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 manager = ConnectionManager()
+origins = OriginRegistry()
 
 ROOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -46,6 +49,7 @@ async def room_socket(websocket: WebSocket, room_id: str) -> None:
             raw = await websocket.receive_text()
             try:
                 message = parse_message(raw)
+                origins.check(room_id, id(websocket), message.origin)
             except ValueError as exc:
                 logger.info("reject room=%s reason=%s", room_id, exc)
                 error = {"v": 1, "type": "error", "message": str(exc)}
@@ -55,5 +59,6 @@ async def room_socket(websocket: WebSocket, room_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        origins.release(room_id, id(websocket))
         count = manager.leave(room_id, websocket)
         logger.info("disconnect room=%s clients=%d", room_id, count)

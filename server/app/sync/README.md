@@ -7,7 +7,7 @@ conflicts resolve, and what is accepted from clients.
 |---|---|
 | `operations.py` | The operation format from `docs/protocol.md` as Pydantic models; `parse_message` / `serialize_message`. **Done (#7).** |
 | `clock.py` | Lamport clock: tick on local events, merge on receive, tie-break by origin ID. |
-| `validation.py` | Check every incoming operation: schema, size limit, allowed properties, value types. Untrusted input. |
+| `validation.py` | `OriginRegistry`: which connection may send as which `origin`. Schema and size checks are in `operations.py`. **Done (#10).** |
 | `conflicts.py` | Last-writer-wins per (object, property) using Lamport order. CRDT-style merging later, if time allows. |
 | `log.py` | Append-only operation log per room, catch-up queries (`since=<lamport>`), snapshot compaction. |
 

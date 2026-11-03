@@ -157,6 +157,18 @@ class OpsMessage(BaseModel):
     type: Literal["ops"]
     ops: Annotated[list[Operation], Field(min_length=1)]
 
+    @model_validator(mode="after")
+    def _one_origin(self) -> "OpsMessage":
+        origins = sorted({op.origin for op in self.ops})
+        if len(origins) > 1:
+            raise ValueError(f"every op in a message must have one origin; got {origins}")
+        return self
+
+    @property
+    def origin(self) -> str:
+        """The client that sent this message (every op carries the same one, #10)."""
+        return self.ops[0].origin
+
 
 def parse_message(raw: str | bytes) -> OpsMessage:
     """Parse one `ops` message from a client.

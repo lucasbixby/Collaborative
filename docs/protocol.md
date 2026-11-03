@@ -170,7 +170,16 @@ Only the common fields.
 4. **Strict validation (#10).** A message is rejected if it doesn't match the schema below,
    including any unknown field, property or rotation mode. Beyond the schema, receivers also
    check: face indices are less than the number of vertices; the whole message fits in 64 KiB;
-   `origin` matches the client ID of the connection that sent it.
+   and every operation in a message has the same `origin`. The relay then checks that origin
+   against the connection that sent it:
+   - The first valid message pins the connection to its origin. A later message with a different
+     origin gets an `error` and isn't relayed; the connection stays open.
+   - An origin has one holder per room at a time, and the newest connection to claim it wins
+     (D-062). A client reconnecting after a network drop reuses its origin, and the server may
+     still think the old socket is alive. The older connection gets an `error` for anything it
+     sends from then on. Closing a connection frees its origin, unless it has already moved on.
+   - This isn't proof of identity (D-063): every client in a room sees the others' origins, so
+     one could claim another's and lock it out, until auth ties origins to users (#16 / #17).
 5. **Only allow-listed properties are ever applied.** Receivers map `property` to Blender
    attributes through a fixed table, never by passing the received name to `setattr`.
 6. **Senders coalesce.** Within one batch there is at most one `set` per (`object`, `property`),
