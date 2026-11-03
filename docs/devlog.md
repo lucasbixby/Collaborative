@@ -797,8 +797,9 @@ who's connected are still in memory (D-039). `scripts/show_log.py` prints a room
   ones written.
 - Mutation-checked. One of my tests failed this check: the original "saved before broadcast" test
   passed with the order reversed, because the write finished before the test looked. It's replaced
-  by a test that reads the log from inside the broadcast. Three other mutants are caught only by a
-  hang (`receive_text` has no timeout, and the `show_log.py` loop never ends if `since` repeats).
+  by a test that reads the log from inside the broadcast. Two other mutants (no append at all, and
+  an inclusive `after_seq`) are caught only by a hang: `receive_text` has no timeout, and the
+  `show_log.py` loop never ends if `since` repeats a row.
 
 **Open / follow-up:**
 - Manual check (Lucas): Blender edits in room `demo`, restart the server, `show_log.py demo`.
