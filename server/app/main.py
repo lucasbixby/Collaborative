@@ -1,12 +1,15 @@
 """FastAPI entry point: wires the REST routers and the WebSocket relay together."""
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, rooms, snapshots
 from app.config import settings
+from app.db.session import create_engine, create_session_factory, create_tables
 from app.realtime import websocket
 
 
@@ -27,9 +30,20 @@ def _configure_logging() -> None:
         app_logger.addHandler(handler)
 
 
-def create_app() -> FastAPI:
+def create_app(database_url: str | None = None) -> FastAPI:
+    """Build the app. The database is only opened at startup, in `lifespan`, so importing this
+    module touches no files, and each app instance has its own engine (D-065)."""
     _configure_logging()
-    app = FastAPI(title="Collaborative", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        engine = create_engine(database_url or settings.database_url)
+        await create_tables(engine)
+        app.state.sessions = create_session_factory(engine)
+        yield
+        await engine.dispose()
+
+    app = FastAPI(title="Collaborative", version="0.1.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
