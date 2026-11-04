@@ -27,10 +27,44 @@ docker-compose.yml     One command to run the server
 
 ## Running
 
-**Server (Docker):**
+### Run the server
+
+You only need Docker. From the repo root:
+
 ```bash
 docker compose up --build        # http://localhost:8000/health
 ```
+
+Add `-d` to run it in the background. It then comes back by itself after a crash or a Docker
+restart, until you `docker compose stop` or `down` it.
+
+| To | Run |
+|---|---|
+| See a room's operation log | `docker compose exec server python scripts/show_log.py demo` |
+| Stop, keeping the data | `docker compose down` |
+| Reset all data | `docker compose down -v` |
+| Check the whole setup | `scripts/docker_smoke.sh` (see below) |
+
+**Connecting from Blender.** On the same machine, the add-on's default Server URL
+(`ws://localhost:8000`) just works. From a second machine on your network, find the host's IP
+(on a Mac, `ipconfig getifaddr en0`) and set the Server URL in the add-on's preferences to
+`ws://<host-ip>:8000`. The host's firewall has to allow port 8000.
+
+**Secret key.** `COLLAB_SECRET_KEY` defaults to `dev-only-change-me`, and the server logs a warning
+at startup while it does. To set it, put `COLLAB_SECRET_KEY=...` in a `.env` file next to
+`docker-compose.yml`; the other `COLLAB_*` settings in `server/.env.example` work the same way.
+Nothing checks users yet (#16): anyone who can reach port 8000 can join any room, so only run this
+on a network you trust.
+
+**`unable to open database file`, restarting over and over?** The volume was created by an image
+from before #23, which ran as root, and the server no longer does. `docker compose down -v`
+fixes it, and deletes that data.
+
+`scripts/docker_smoke.sh` builds from scratch and checks the relay, restarts, the volume and the
+non-root user. It uses its own Compose project and volume, so your data is safe, but it needs port
+8000 free.
+
+### Other parts
 
 **Server (local dev):**
 ```bash

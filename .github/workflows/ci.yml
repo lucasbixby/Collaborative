@@ -20,6 +20,12 @@ jobs:
       - run: ruff check .
       - run: pytest
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/docker_smoke.sh
+
   addon:
     runs-on: ubuntu-latest
     defaults:

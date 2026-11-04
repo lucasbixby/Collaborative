@@ -4,6 +4,9 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# The placeholder secret. The server warns at startup while it's in use; enforcing is #16.
+DEFAULT_SECRET_KEY = "dev-only-change-me"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="COLLAB_", env_file=".env")
@@ -15,7 +18,7 @@ class Settings(BaseSettings):
     asset_dir: Path = Path("./data/assets")
 
     # Used to sign auth tokens. Always override outside local dev.
-    secret_key: str = "dev-only-change-me"
+    secret_key: str = DEFAULT_SECRET_KEY
 
     # Reject operations larger than this many bytes.
     max_operation_bytes: int = 64 * 1024
