@@ -20,7 +20,7 @@ client doesn't have is dropped, not buffered (protocol rule 9).
 
 import bpy
 
-from . import detect, ids, ordering
+from . import detect, ids, ordering, timing
 from .log import log
 
 # Fixed table (protocol rule 5): `property` is looked up here, never passed to `setattr`.
@@ -96,6 +96,7 @@ def _apply_create(op: dict, objects: dict[str, bpy.types.Object]) -> None:
             bpy.data.meshes.remove(mesh)
         return
     objects[collab_id] = obj
+    timing.mark("applied", [op])
 
 
 def _apply_delete(op: dict, objects: dict[str, bpy.types.Object]) -> None:
@@ -110,6 +111,7 @@ def _apply_delete(op: dict, objects: dict[str, bpy.types.Object]) -> None:
     bpy.data.objects.remove(obj, do_unlink=True)
     if isinstance(data, bpy.types.Mesh) and data.users == 0:
         bpy.data.meshes.remove(data)
+    timing.mark("applied", [op])
 
 
 def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | None) -> None:
@@ -166,6 +168,7 @@ def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | 
         return
 
     ordering.versions.record(key, op_id)
+    timing.mark("applied", [op])
 
 
 def apply_message(message: dict) -> None:

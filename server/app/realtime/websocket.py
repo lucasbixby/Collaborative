@@ -24,6 +24,7 @@ import re
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.sync import log as operation_log
+from app.sync import timing
 from app.sync.operations import parse_message, serialize_message
 from app.sync.validation import OriginRegistry
 
@@ -54,6 +55,7 @@ async def room_socket(websocket: WebSocket, room_id: str) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
+            received_at = timing.now()
             try:
                 message = parse_message(raw)
                 origins.check(room_id, id(websocket), message.origin)
@@ -61,6 +63,8 @@ async def room_socket(websocket: WebSocket, room_id: str) -> None:
                 logger.info("reject room=%s reason=%s", room_id, exc)
                 await _send_error(websocket, str(exc))
                 continue
+            timing.mark("server_received", message, received_at)
+            timing.mark("server_parsed", message)
             try:
                 async with websocket.app.state.sessions() as session:
                     await operation_log.append(session, room_id, message)
@@ -69,7 +73,9 @@ async def room_socket(websocket: WebSocket, room_id: str) -> None:
                 # Generic on purpose: database details stay in the server's log.
                 await _send_error(websocket, "the server couldn't save this message; not relayed")
                 continue
+            timing.mark("server_persisted", message)
             await manager.broadcast(room_id, serialize_message(message), exclude=websocket)
+            timing.mark("server_broadcast", message)
     except WebSocketDisconnect:
         pass
     finally:
