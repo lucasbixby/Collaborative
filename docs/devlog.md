@@ -29,7 +29,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
 | In progress | — |
 | Next up | #20 Snapshots and catch-up |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log (in review; manual check open) |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command (in review) |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -106,6 +106,12 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-068 | `seq` uses SQLite AUTOINCREMENT, so it's never reused | 11/03 | Active |
 | D-069 | Lamport is capped at 2^63 − 1 in the protocol | 11/03 | Active |
 | D-070 | A failed write gets a generic `error` and isn't broadcast or retried | 11/03 | Active |
+| D-071 | The container runs as a non-root user, uid 10001 | 11/03 | Active |
+| D-072 | One uvicorn worker, explicitly | 11/03 | Active |
+| D-073 | Healthcheck in the Dockerfile, using Python's urllib on `/health` | 11/03 | Active |
+| D-074 | `docker_smoke.sh` is its own Compose project, with its test client inside the container | 11/03 | Active |
+| D-075 | Dependencies install from `pyproject.toml` alone; `app` isn't installed as a package | 11/03 | Active |
+| D-076 | The default secret key gets a startup warning, not an error | 11/03 | Active |
 
 ## Log
 
@@ -815,3 +821,45 @@ who's connected are still in memory (D-039). `scripts/show_log.py` prints a room
   (`lamport`, `origin`) has no unique constraint. Replaying it is harmless since operations are
   idempotent, and a constraint would turn a retry into a failed write and an `error`.
 - The log grows without limit until #20's compaction, and a large `create` is up to 64 KiB a row.
+
+### 2026-11-03 · Server runs from one Docker command (#23)
+
+`docker compose up --build` now gives a non-root, single-worker, health-checked server whose data
+survives restarts, and `scripts/docker_smoke.sh` proves it from a clean build. Before the changes
+it already started and stopped cleanly, but it ran as root and `show_log.py` wasn't in the image.
+
+| Decision | Why |
+|---|---|
+| D-071: The container runs as `collab`, uid 10001; `/srv/data` is created and chowned before `VOLUME` | A fresh named volume copies the ownership of the folder it mounts over, so a brand-new volume is writable with no entrypoint script. Cost: a volume first created by the older root image stays root-owned, and the server restart-loops on `unable to open database file` until `down -v`. Accepted, since no data worth keeping exists yet; it's in the README. |
+| D-072: `--workers 1`, with a comment saying why | Rooms and origin pins are in-process memory, so a second worker would split a room in two with no error. SQLite's single writer points the same way. Scaling out would need shared room state first. |
+| D-073: `HEALTHCHECK` in the Dockerfile, with `python -c` and urllib | The slim image has no curl, and installing it for this isn't worth a layer. In the Dockerfile rather than compose, so a plain `docker run` gets it too. `--start-interval=1s` makes startup report healthy in about a second. `/health` doesn't touch the database, so it means "the process answers": a database that won't open is still caught, because startup fails and the container exits, but a disk that fills up later isn't. |
+| D-074: `docker_smoke.sh` runs as Compose project `collaborative-smoke`; `smoke_client.py` runs inside the container | The script runs `down -v`, which would delete real data under the default project name. Inside the container, the client needs nothing on the host but Docker and curl, so it works on a clean machine and in CI. `ws_probe.py` didn't fit: it waits for Enter and reads `docs/protocol.md`, which isn't in the image. The published port is covered by `curl` on `/health` in the script and by the add-on run. |
+| D-075: The dependency layer reads `pyproject.toml` with `tomllib`; `app` runs from `/srv` | A code edit now rebuilds in under a second with the `pip install` layer cached. It also removes the unused second copy of `app` in site-packages and the stray `build/` folder. |
+| D-076: A `WARNING` at startup while `COLLAB_SECRET_KEY` is the default | Enforcing it is #16. Logged in `lifespan`, so building the app (as importing `app.main` and every test does) stays quiet. |
+
+**Details:**
+- `.dockerignore` patterns only match at the top level without `**/`, so local `__pycache__` folders
+  were being copied into the image. Fixed.
+- `docker compose stop` with a client connected takes at most about a second, with exit code 0.
+  Uvicorn closes the socket with code 1012, so the 10 s kill is never reached.
+- `.env` next to `docker-compose.yml` works through Compose's own variable substitution, so an
+  absent file is fine. The server's own `.env` reading isn't involved, since `.dockerignore`
+  keeps `.env` out of the image.
+- `restart: unless-stopped` checked: SIGTERM from inside brings it back, `compose stop` doesn't.
+- CI runs the whole smoke script rather than only `/health`, since that was one line more.
+- Verified with two real Blender 5.2.2 windows, using the default Server URL and scripted real
+  operators (`primitive_cube_add`, `transform.translate`): create and moves in both directions,
+  then a `docker compose restart` underneath them. Both reconnected in about 3 s and the next move
+  synced. `show_log.py` listed all four operations.
+- Mutation-checked the smoke script: root, no scripts, no healthcheck, no volume, no warning and an
+  ignored SIGTERM each fail it. The check also exposed a bug in the script: `logs | grep -q` under
+  `pipefail` can fail at random when `grep` quits early, so it now matches on captured output.
+
+**Open / follow-up:**
+- Not run: a second physical machine on the LAN (the LAN IP was only tried from the host), and
+  the first CI run, which needs a PR. Only built for arm64 here; CI will be the first amd64 build.
+- Mouse-driven edits in the Blender windows: the run above used scripted operators (Lucas's check).
+- Dependencies are `>=` ranges with no lock file, so a future clean build can get different
+  versions and break. Worth a lock file before the demo.
+- #16: enforce the secret key, and until then anyone who can reach port 8000 can join any room.
+- #22: the web service placeholder in `docker-compose.yml`.

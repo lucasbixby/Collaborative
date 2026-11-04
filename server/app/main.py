@@ -8,9 +8,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, rooms, snapshots
-from app.config import settings
+from app.config import DEFAULT_SECRET_KEY, settings
 from app.db.session import create_engine, create_session_factory, create_tables
 from app.realtime import websocket
+
+logger = logging.getLogger(__name__)
 
 
 def _configure_logging() -> None:
@@ -37,6 +39,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if settings.secret_key == DEFAULT_SECRET_KEY:
+            logger.warning(
+                "COLLAB_SECRET_KEY is the default, dev-only value. Set your own before "
+                "running this anywhere other people can reach it."
+            )
         engine = create_engine(database_url or settings.database_url)
         await create_tables(engine)
         app.state.sessions = create_session_factory(engine)
