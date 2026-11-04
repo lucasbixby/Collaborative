@@ -24,6 +24,7 @@ There's no migrations tool yet (D-067). `create_all` adds missing tables but nev
 existing one, so after a change to a table's columns, delete the file and start again.
 
 In Docker, the database is in `/srv/data`, on the `server-data` volume from `docker-compose.yml`.
+See "Run the server" in the [main README](../README.md).
 
 ## Reading the log
 
@@ -35,8 +36,11 @@ python3 scripts/show_log.py demo --after 40 # only seq above 40
 It reads the same `COLLAB_DATABASE_URL` as the server, so run it from this folder too. It's safe
 while the server is running.
 
+In Docker: `docker compose exec server python scripts/show_log.py demo`.
+
 ## Other dev aids
 
 `COLLAB_TIMING=<file>` records latency timings; see `docs/latency.md`.
 
-`scripts/ws_probe.py <room_id>` talks to the relay by hand, without Blender.
+`scripts/ws_probe.py <room_id>` talks to the relay by hand, without Blender. Run it from this
+folder, including when the server is in Docker: it reads `docs/protocol.md`, which isn't in the image.

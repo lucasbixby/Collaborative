@@ -1,14 +1,30 @@
 # Success criterion: the server runs from a single command.
 #   docker compose up --build
+#
+# Settings can come from the shell or an optional .env next to this file; see server/.env.example.
 services:
   server:
     build: ./server
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
+      # The default only earns a warning at startup for now; enforcing it is #16.
       COLLAB_SECRET_KEY: ${COLLAB_SECRET_KEY:-dev-only-change-me}
+      COLLAB_DATABASE_URL: ${COLLAB_DATABASE_URL:-sqlite+aiosqlite:////srv/data/collaborative.db}
+      COLLAB_ASSET_DIR: ${COLLAB_ASSET_DIR:-/srv/data/assets}
+      COLLAB_MAX_OPERATION_BYTES: ${COLLAB_MAX_OPERATION_BYTES:-65536}
+      COLLAB_CORS_ORIGINS: ${COLLAB_CORS_ORIGINS:-["http://localhost:5173"]}
     volumes:
       - server-data:/srv/data   # database + asset store survive restarts
+
+  # Web UI (#22): not built yet.
+  # web:
+  #   build: ./web
+  #   ports:
+  #     - "5173:5173"
+  #   depends_on:
+  #     - server
 
 volumes:
   server-data:
