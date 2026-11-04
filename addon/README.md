@@ -11,6 +11,7 @@ Targets **Blender 5.2 LTS** (bundled Python 3.13).
 | `apply.py` | Apply remote operations, guarded against echo loops |
 | `client.py` | WebSocket on a background thread, queue to the main thread |
 | `log.py` | `log(...)`: terminal output tagged with the client name (A / B) |
+| `timing.py` | Latency timing, off unless `COLLAB_TIMING` is set (#24, `docs/latency.md`) |
 
 ## Development setup (once)
 

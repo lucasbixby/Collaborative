@@ -12,6 +12,9 @@ data/
 *.db
 .env
 
+# Raw timing data from scripts/latency_run.py (#24)
+latency-results/
+
 # Node
 node_modules/
 web/dist/

@@ -37,4 +37,6 @@ while the server is running.
 
 ## Other dev aids
 
+`COLLAB_TIMING=<file>` records latency timings; see `docs/latency.md`.
+
 `scripts/ws_probe.py <room_id>` talks to the relay by hand, without Blender.

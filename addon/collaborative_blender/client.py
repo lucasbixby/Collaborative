@@ -23,6 +23,7 @@ from collections.abc import Callable
 
 import bpy
 
+from . import timing
 from .log import log
 from .vendor import websocket as _ws
 
@@ -110,8 +111,10 @@ class _Connection:
             if text is None:
                 time.sleep(DRAIN_INTERVAL)
                 continue
+            timing.mark("dequeued", text)
             try:
                 sock.send(text)
+                timing.mark("sent", text)
             except Exception as exc:  # noqa: BLE001 - any send failure means reconnect
                 log("client: send failed", exc)
                 with self._outbox_lock:
@@ -130,6 +133,7 @@ class _Connection:
             if text == "":  # the verified close() signal, not an exception
                 dead.set()
                 return
+            timing.mark("received", text)
             self.inbox.put(text)
 
     def _wait_backoff(self, attempt: int) -> None:
@@ -161,7 +165,9 @@ def connect(server_url: str, room_id: str, on_message: Callable[[dict], None]) -
 def send(message: dict) -> None:
     """Queue `message` to be sent as JSON. Never blocks; a no-op if not connected."""
     if _conn is not None:
-        _conn.send(json.dumps(message))
+        text = json.dumps(message)
+        timing.mark("queued", message.get("ops", []))  # before it can reach the writer thread
+        _conn.send(text)
 
 
 def disconnect() -> None:
@@ -198,6 +204,7 @@ def drain() -> None:
             raw = conn.inbox.get_nowait()
         except queue.Empty:
             return
+        timing.mark("drained", raw)
         _handle_message(conn.on_message, raw)
 
 

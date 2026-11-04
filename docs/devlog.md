@@ -27,7 +27,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
-| In progress | — |
+| In progress | #24 Measure sync latency (one-machine results done; LAN run open) |
 | Next up | #20 Snapshots and catch-up |
 | Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log (in review; manual check open) |
 | Loose ends | Adjust Last Operation spike item |
@@ -106,6 +106,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-068 | `seq` uses SQLite AUTOINCREMENT, so it's never reused | 11/03 | Active |
 | D-069 | Lamport is capped at 2^63 − 1 in the protocol | 11/03 | Active |
 | D-070 | A failed write gets a generic `error` and isn't broadcast or retried | 11/03 | Active |
+| D-077 | Latency timing is out of band, in JSONL files, off by default | 11/03 | Active |
+| D-078 | End to end runs from the depsgraph handler to the setter on the receiver | 11/03 | Active |
+| D-079 | Across machines: round trip on one clock, with RTT/2 reported alongside a corrected estimate | 11/03 | Active |
 
 ## Log
 
@@ -815,3 +818,36 @@ who's connected are still in memory (D-039). `scripts/show_log.py` prints a room
   (`lamport`, `origin`) has no unique constraint. Replaying it is harmless since operations are
   idempotent, and a constraint would turn a retry into a failed write and an `error`.
 - The log grows without limit until #20's compaction, and a large `create` is up to 64 KiB a row.
+
+### 2026-11-03 · Measure sync latency (#24)
+
+Added out-of-band timing on both sides and tools to run real Blender scenarios and join the results.
+On one machine everything is well under 200 ms: worst p95 92.6 ms, worst sample 106.9 ms. About 97% of
+the time is timers. The LAN run, which the criterion actually asks about, is still open. Results and
+method are in [latency.md](latency.md).
+
+| Decision | Why |
+|---|---|
+| D-077: `COLLAB_TIMING=<file>` turns on per-process JSONL, keyed by (`origin`, `lamport`, `object`); marks go to a buffer and a background thread writes them | The schema forbids extra fields, and changing the protocol to measure it would be wrong. The buffer keeps file I/O off the measured path: about 160 ns per mark. Off, there's no clock read and no file, just a no-op call of about 50 ns. The add-on and server each have their own module, because the add-on ships alone. |
+| D-078: End to end is first depsgraph handler call since the last flush → setter done on the receiver, split into ten stages | As specified, with one change: there are three timers, because the writer thread also sleeps `DRAIN_INTERVAL` when idle, so it gets its own stage. `applied` isn't visible, so the driver also records viewport draws, as a separate row (p95 under 7 ms in all runs). |
+| D-079: Across machines, measure a round trip on A's clock and report RTT/2 plus local end to end + (LAN RTT − same-machine RTT) / 2 | Clocks don't agree across machines. RTT/2 alone understates the system because the probe has no Blender timers: 26 ms against 58 ms measured on one machine. The estimate assumes timers don't change with distance. |
+
+**Details:**
+- `scripts/latency_run.py` starts the server, two Blenders and any load; `latency_blender.py` drives
+  them; `latency_report.py` joins the files; `latency_load.py` and `latency_probe.py` are the simulated
+  clients. Raw data goes to `latency-results/`, git-ignored.
+- `INTERVAL` and `DRAIN_INTERVAL` are unchanged.
+- The first drag run produced zero samples and still printed `ok`: a simulated G key doesn't reach the
+  keymap. The driver now invokes the modal directly and checks it started, and the runner fails on zero
+  samples. That guard then caught a mistake in my own RTT test.
+- Blender saves `quit.blend` in the system temp folder on exit, so automated runs overwrite Recover Last
+  Session. The runner now points `TMPDIR` elsewhere; the earlier #23 run did overwrite it once.
+- Mutation-checked the report and hooks; two mutants survived at first (a clock stuck at a constant, and
+  the reply's origin check), so tests were added for both.
+
+**Open / follow-up:**
+- Lucas: scenario 5 over the LAN, with the steps in latency.md. Then `Closes #24`.
+- Scenario 6 (Docker) after #23 merges.
+- The idle detect wait reaches about 67 ms rather than 50 ms. Reproduced, not explained; see latency.md.
+- Optional: waking the writer with a `threading.Event` would save about 11 ms at p50, with less CPU.
+- Nothing here measured the server's capacity: 160 msg/s was simply fine.

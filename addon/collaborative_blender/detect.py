@@ -19,7 +19,7 @@ from contextlib import contextmanager
 import bpy
 from bpy.app.handlers import persistent
 
-from . import ids, ordering
+from . import ids, ordering, timing
 from .log import log
 
 INTERVAL = 0.05  # 50 ms (D-019)
@@ -35,6 +35,8 @@ _suppress_depth = 0
 _cache: dict[str, dict[str, object]] = {}
 _origin: str | None = None
 _send = None
+_flush_started_at = None
+_noticed_at = None  # timing (#24): when the scene first went dirty since the last flush
 
 
 def _read_rotation(obj: bpy.types.Object) -> dict:
@@ -142,6 +144,14 @@ def _send_create(obj: bpy.types.Object, collab_id: str, values: dict[str, object
     if size > MAX_MESSAGE_BYTES:
         log(f"too large to sync (#27): {obj.name}, {size} bytes")
         return
+    _send_timed(message)
+
+
+def _send_timed(message: dict) -> None:
+    """Send `message`, first recording when the change behind it was noticed and when this
+    flush began (#24). Both are known only now, once the operations exist."""
+    timing.mark("noticed", message["ops"], _noticed_at)
+    timing.mark("flush_start", message["ops"], _flush_started_at)
     _send(message)
 
 
@@ -167,10 +177,11 @@ def flush() -> dict | None:
     `create`s returns None). A plain function (not the timer callback itself), so headless
     tests can call it directly; `bpy.app.timers` don't run without Blender's own event loop.
     """
-    global _dirty, _cache
+    global _dirty, _cache, _flush_started_at, _noticed_at
     if not _dirty:
         return None
     _dirty = False
+    _flush_started_at = timing.now()
 
     _retire_tombstoned_ids()
     current = _snapshot()
@@ -188,15 +199,19 @@ def flush() -> dict | None:
     _cache = current
 
     if not ops:
+        _noticed_at = None
         return None
     message = {"v": 1, "type": "ops", "ops": ops}
-    _send(message)
+    _send_timed(message)
+    _noticed_at = None
     return message
 
 
 def _mark_dirty(*_args) -> None:
-    global _dirty
+    global _dirty, _noticed_at
     if _suppress_depth == 0:
+        if not _dirty and _noticed_at is None:
+            _noticed_at = timing.now()
         _dirty = True
 
 
