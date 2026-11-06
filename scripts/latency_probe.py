@@ -12,9 +12,11 @@ machines don't agree, so this records no times at all.
 import argparse
 import asyncio
 import json
+import sys
 import uuid
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 
 def reply_to(message: dict, origin: str) -> dict | None:
@@ -29,14 +31,8 @@ def reply_to(message: dict, origin: str) -> dict | None:
     return {"v": 1, "type": "ops", "ops": replies} if replies else None
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("room_id")
-    parser.add_argument("--url", default="ws://localhost:8000")
-    args = parser.parse_args()
-
+async def answer(uri: str) -> None:
     origin = str(uuid.uuid4())
-    uri = f"{args.url}/ws/rooms/{args.room_id}"
     async with websockets.connect(uri) as ws:
         print(f"Connected to {uri}. Answering moves; Ctrl+C to stop.", flush=True)
         answered = 0
@@ -49,10 +45,24 @@ async def main() -> None:
                     print(f"answered {answered}", flush=True)
 
 
-if __name__ == "__main__":
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("room_id")
+    parser.add_argument("--url", default="ws://localhost:8000")
+    args = parser.parse_args()
+
+    uri = f"{args.url}/ws/rooms/{args.room_id}"
     try:
-        asyncio.run(main())
+        asyncio.run(answer(uri))
     except KeyboardInterrupt:
         pass
-    except websockets.exceptions.ConnectionClosed as exc:
+    except ConnectionClosed as exc:
         print(f"The server closed the connection: {exc}")
+    except OSError as exc:
+        print(f"Couldn't connect to {uri}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

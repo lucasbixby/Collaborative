@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -208,3 +210,43 @@ def test_probe_replies_at_the_next_lamport_with_its_own_origin():
     assert reply["ops"] == [{**move, "lamport": 5, "origin": "me"}]
     assert probe.reply_to({"v": 1, "type": "ops", "ops": [create]}, "me") is None
     assert probe.reply_to({"v": 1, "type": "error", "message": "x"}, "me") is None
+
+
+def _run_probe(*args: str) -> subprocess.CompletedProcess:
+    """A fresh interpreter, because websockets 17 loads `websockets.exceptions` lazily."""
+    return subprocess.run(
+        [sys.executable, str(SCRIPTS / "latency_probe.py"), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_probe_help_exits_cleanly():
+    result = _run_probe("--help")
+
+    assert result.returncode == 0
+    assert "room_id" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_probe_without_a_room_shows_argparses_message():
+    result = _run_probe()
+
+    assert result.returncode == 2
+    assert "the following arguments are required: room_id" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_probe_shows_the_real_error_when_the_connection_is_refused():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]  # free once closed, so nothing listens there
+
+    result = _run_probe("latency", "--url", f"ws://127.0.0.1:{port}")
+
+    assert result.returncode == 1
+    assert f"Couldn't connect to ws://127.0.0.1:{port}/ws/rooms/latency" in result.stderr
+    assert "Connect call failed" in result.stderr
+    assert "Traceback" not in result.stderr

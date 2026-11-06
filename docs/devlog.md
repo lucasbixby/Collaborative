@@ -27,9 +27,9 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | | |
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
-| In progress | #24 Measure sync latency (one-machine results done; LAN run open) |
+| In progress | — |
 | Next up | #20 Snapshots and catch-up |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -115,6 +115,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-077 | Latency timing is out of band, in JSONL files, off by default | 11/03 | Active |
 | D-078 | End to end runs from the depsgraph handler to the setter on the receiver | 11/03 | Active |
 | D-079 | Across machines: round trip on one clock, with RTT/2 reported alongside a corrected estimate | 11/03 | Active |
+| D-080 | Compose passes `COLLAB_TIMING` through, empty (off) by default; latency runs use their own Compose project | 11/05 | Active |
 
 ## Log
 
@@ -899,3 +900,35 @@ method are in [latency.md](latency.md).
 - The idle detect wait reaches about 67 ms rather than 50 ms. Reproduced, not explained; see latency.md.
 - Optional: waking the writer with a `threading.Event` would save about 11 ms at p50, with less CPU.
 - Nothing here measured the server's capacity: 160 msg/s was simply fine.
+
+### 2026-11-05 · LAN and Docker latency; #24 done
+
+Lucas ran scenario 5 over home Wi-Fi with an iPhone as the far end: round trip p50 130.7 ms, p95
+201.3 ms. The estimated end to end is 97 ms at p50, **151 ms at p95** and 176 ms at p99, so the
+criterion is met with about 50 ms to spare rather than 100, and the slowest samples are probably over
+200 ms (about 227 ms at the maximum). Scenario 6, against the Docker server on this Mac, gave p95
+94.0 ms, about 5 ms more than native. Both are in [latency.md](latency.md).
+
+| Decision | Why |
+|---|---|
+| D-080: `docker-compose.yml` passes `COLLAB_TIMING` through, empty by default; latency runs use Compose project `collab-latency` and end with `down -v` | An empty value means off in `timing.configure`, so a normal `docker compose up` is unchanged. A separate project keeps the run's ops and timing file out of the real `server-data` volume, as D-074 does for the smoke test. |
+
+**Details:**
+- Fixed `latency_probe.py`: with websockets 17, `websockets.exceptions` only loads once a connection
+  is made, so `--help`, a missing argument or a refused connection all ended in an `AttributeError`
+  that hid the real error. It now imports `ConnectionClosed` explicitly, and a failed connection prints
+  the `OSError` (for example "No route to host") and exits 1. Three subprocess tests cover it and fail
+  without the fix.
+- The LAN steps now cover a phone as machine 2 (a-Shell or Termux): curl from
+  raw.githubusercontent.com, Smart Punctuation off, no tab completion, Local Network access, and
+  starting the probe only once `latency_run.py` waits at its prompt.
+- In Docker the SQLite commit takes 4.7 ms at p50, against 1.0 ms natively, since the database is on a
+  volume inside Docker Desktop's VM. That accounts for most of the difference.
+
+**Open / follow-up:**
+- The LAN figure is an estimate from a round trip to a phone in Low Power Mode, likely pessimistic.
+  A laptop-to-laptop or Ethernet run would tighten it, but isn't needed for the criterion.
+- The tail over Wi-Fi is the closest thing to the target. If it matters for the demo, the writer's
+  `threading.Event` (about 11 ms at p50) is still the cheapest gain; `INTERVAL` and `DRAIN_INTERVAL`
+  are unchanged.
+- The idle detect wait above 50 ms is still unexplained.
