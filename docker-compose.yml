@@ -15,6 +15,8 @@ services:
       COLLAB_ASSET_DIR: ${COLLAB_ASSET_DIR:-/srv/data/assets}
       COLLAB_MAX_OPERATION_BYTES: ${COLLAB_MAX_OPERATION_BYTES:-65536}
       COLLAB_CORS_ORIGINS: ${COLLAB_CORS_ORIGINS:-["http://localhost:5173"]}
+      # Latency timing (#24), off unless set, e.g. COLLAB_TIMING=/srv/data/timing.jsonl.
+      COLLAB_TIMING: ${COLLAB_TIMING:-}
     volumes:
       - server-data:/srv/data   # database + asset store survive restarts
 
