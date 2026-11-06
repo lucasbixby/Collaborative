@@ -23,7 +23,9 @@ class COLLAB_OT_join_room(bpy.types.Operator):
         prefs = context.preferences.addons[__package__].preferences
         room_id = context.window_manager.room_id
         try:
-            client.connect(prefs.server_url, room_id, apply.apply_message)
+            client.connect(
+                prefs.server_url, room_id, apply.apply_message, detect.send_unknown_creates
+            )
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}

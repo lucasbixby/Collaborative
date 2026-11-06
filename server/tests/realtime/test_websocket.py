@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.config import settings
 from app.realtime.websocket import manager, origins
 from app.sync import log as operation_log
+from tests.catchup import joined
 
 PROTOCOL_MD = Path(__file__).resolve().parents[3] / "docs" / "protocol.md"
 
@@ -49,7 +50,8 @@ def _as_origin(message, origin):
 
 
 def _ws(client, room_id):
-    return client.websocket_connect(f"/ws/rooms/{room_id}")
+    """Connected, with its catch-up (#20) already read."""
+    return joined(client, room_id)
 
 
 @pytest.fixture

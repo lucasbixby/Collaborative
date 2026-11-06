@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# TODO: User, Room, RoomMember(role), Snapshot
+# TODO: User, Room, RoomMember(role)
 
 
 class Base(DeclarativeBase):
@@ -35,3 +35,17 @@ class Operation(Base):
     object: Mapped[str] = mapped_column(String(36))
     payload: Mapped[str] = mapped_column(Text)  # the operation as validated JSON
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Snapshot(Base):
+    """A room's folded state up to and including `seq` (#20): a cache over the log, which is
+    never trimmed, so any snapshot can be rebuilt from it. `state` is `RoomState.to_json()`."""
+
+    __tablename__ = "snapshots"
+    __table_args__ = (Index("ix_snapshots_room_seq", "room_id", "seq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    room_id: Mapped[str] = mapped_column(String(64))
+    seq: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

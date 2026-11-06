@@ -77,21 +77,27 @@ addon/scripts/blender.sh --two
 Starts clients **A** and **B** sharing one terminal; every `log(...)` line says which
 client wrote it. Ctrl+C closes both.
 
-**Testing sync by hand, until #20 (snapshots) exists:** two separately-opened Blenders
-give the same objects different random `collab_id`s, so an operation from A would never
-match an object in B. Both clients must open **the same saved `.blend` file**, so the IDs
-`ensure_ids()` already assigned are identical on both sides (IDs are custom properties,
-so they're saved in the file and survive reopening it, #4). To prepare one:
+**Testing sync by hand:** start the server (`uvicorn app.main:app`, or `docker compose up`;
+see `server/README.md`), then **Join room** in both A and B with the same Room ID. The two
+Blenders don't need the same file (#20):
 
-1. Open Blender once, add the objects you want to test with, join a room (the
-   Collaborative panel) so detection runs and `ensure_ids()` tags everything, then leave.
-2. Save the file (e.g. `shared.blend`).
-3. Open that same file in both client A and client B.
+- **Joining catches up.** The server first sends the room's current state as ordinary
+  operations, and the panel shows "Catching up…" until it's in. A Blender with an empty scene
+  ends up with every object in the room, and one that was away gets what it missed, deletes
+  included.
+- **Merge on join.** Once caught up, a client offers the room every local mesh the room doesn't
+  know yet, as a normal `create`. So two Blenders joining with the default scene end up with
+  both cubes (the second one arrives as `Cube.001`). Cameras, lights and other non-meshes stay
+  local (`not synced yet`).
+- **Only on Join.** A reconnect after a network drop doesn't offer anything again: edits made
+  meanwhile are already queued and go out normally.
+- **Edits made while not in a room aren't sent.** If you move an object the room already knows
+  while you're out of the room, then rejoin, that move stays on your screen only, until someone
+  edits the object again.
 
-With both on the same file and the server running (`uvicorn app.main:app`, see
-`server/README.md`), **Join room** in both A and B with the same Room ID: edits in one
-now reach the other through the relay (#11 / #12 / #13). `server/scripts/ws_probe.py` can
-join the same room from a terminal to watch the traffic.
+Opening the same saved `.blend` in both still works: objects whose IDs the room already knows
+aren't offered again. `server/scripts/ws_probe.py` can join the same room from a terminal to
+watch the traffic.
 
 **Apply from clipboard** (Collaborative panel) is still there as a dev aid: paste a
 logged batch (or a hand-written one) and apply it without a server, e.g. to check

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Reject operations larger than this many bytes.
     max_operation_bytes: int = 64 * 1024
 
+    # Write a room snapshot once its log has grown this many operations past the last one (#20).
+    snapshot_every: int = 500
+
     # Origins allowed to call the REST API (the React dev server by default).
     cors_origins: list[str] = ["http://localhost:5173"]
 

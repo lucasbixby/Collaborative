@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.sync import timing
+from tests.catchup import joined
 
 ORIGIN = "0b7e5d21-8f3c-4a6b-9d2e-1f4a5b6c7d8e"
 OBJECT = "6c1f2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
@@ -36,7 +37,7 @@ def test_off_by_default_writes_nothing_and_reads_no_clock(client, tmp_path, monk
     timing.configure(None)
     monkeypatch.chdir(tmp_path)
 
-    with client.websocket_connect("/ws/rooms/demo") as ws:
+    with joined(client, "demo") as ws:
         ws.send_text(json.dumps(_message()))
         ws.close()
 
@@ -49,8 +50,8 @@ def test_off_by_default_writes_nothing_and_reads_no_clock(client, tmp_path, monk
 def test_a_relayed_message_records_each_stage_in_order(database_url, timing_file):
     with (
         TestClient(create_app(database_url)) as client,
-        client.websocket_connect("/ws/rooms/demo") as sender,
-        client.websocket_connect("/ws/rooms/demo") as receiver,
+        joined(client, "demo") as sender,
+        joined(client, "demo") as receiver,
     ):
         sender.send_text(json.dumps(_message(7)))
         receiver.receive_text()
@@ -71,7 +72,7 @@ def test_a_relayed_message_records_each_stage_in_order(database_url, timing_file
 
 
 def test_a_rejected_message_records_nothing(client, timing_file):
-    with client.websocket_connect("/ws/rooms/demo") as ws:
+    with joined(client, "demo") as ws:
         ws.send_text("not json")
         assert json.loads(ws.receive_text())["type"] == "error"
 

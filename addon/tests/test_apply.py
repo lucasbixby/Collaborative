@@ -179,10 +179,12 @@ def test_own_origin_operations_are_skipped(sent):
 def test_apply_then_flush_sends_nothing(sent):
     obj = _add_cube()
     _settle()
-    detect.flush()  # enters the cache
+    detect.flush()  # enters the cache, and sends its create
+    created_at = sent[-1]["ops"][0]["lamport"]
     sent.clear()
 
-    op = _set_op(ids.get_id(obj), "location", [4.0, 4.0, 4.0])
+    # A remote edit always comes after the remote saw the create, so it's newer (D-081).
+    op = _set_op(ids.get_id(obj), "location", [4.0, 4.0, 4.0], lamport=created_at + 1)
     apply.apply_message(_ops_message(op))
 
     assert tuple(obj.location) == pytest.approx((4.0, 4.0, 4.0))  # actually got applied

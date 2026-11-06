@@ -151,6 +151,12 @@ class FakeRelay:
         for socket in list(self._sockets):
             asyncio.run_coroutine_threadsafe(socket.send(text), self._loop).result(timeout=5)
 
+    def drop_clients(self) -> None:
+        """Close every client's socket from the server side, as a network drop would, while
+        the server keeps listening, so the client reconnects to this same relay (#20)."""
+        for socket in list(self._sockets):
+            asyncio.run_coroutine_threadsafe(socket.close(), self._loop).result(timeout=5)
+
     def stop(self) -> None:
         """Idempotent: a test may stop the relay itself, so the fixture's own teardown
         must not fail when it calls this a second time."""

@@ -11,6 +11,13 @@ thread arrives at another client's background reader; sending still works while 
 connection's reader is blocked in `recv()`; `close()` from the main thread stops the
 reader within ~1 ms; a server that isn't running raises `ConnectionRefusedError`; and
 after `close()`, `recv()` returns `""` rather than raising, so `""` means disconnected.
+
+Catch-up (#20): on every connection the server first sends the room's state as ordinary `ops`
+messages, then `{"type": "synced", "seq": N}`. `ops` go to `on_message` as usual. The first
+`synced` of a Join also calls `on_synced` with every object ID those catch-up messages
+mentioned, which is how detect knows which local objects the room hasn't seen (D-085). Each
+inbox entry carries its socket's generation, so a `synced` left over from a dead socket can't
+mark the next one as caught up.
 """
 
 import json
@@ -41,11 +48,24 @@ class _Connection:
     """One `connect()` call's worth of state: the outbox/inbox queues and the writer
     thread that owns the socket, reconnecting as needed until `stop()` is called."""
 
-    def __init__(self, url: str, on_message: Callable[[dict], None]) -> None:
+    def __init__(
+        self,
+        url: str,
+        on_message: Callable[[dict], None],
+        on_synced: Callable[[set[str]], None] | None = None,
+    ) -> None:
         self.url = url
         self.on_message = on_message
+        self.on_synced = on_synced
         self.status = "connecting"
-        self.inbox: queue.Queue[str] = queue.Queue()
+        self.inbox: queue.Queue[tuple[int, str]] = queue.Queue()
+        # `generation` is bumped by the writer thread for each new socket; the rest is only
+        # touched on the main thread, in drain().
+        self.generation = 0
+        self.synced_generation = -1  # the socket generation whose `synced` has arrived
+        self.synced_seq: int | None = None
+        self.joined = False  # whether this Join has had its first `synced`
+        self.catch_up_ids: set[str] = set()
         self._outbox: deque[str] = deque(maxlen=OUTBOX_LIMIT)
         self._outbox_lock = threading.Lock()
         self._stopping = threading.Event()
@@ -86,11 +106,14 @@ class _Connection:
 
             with self._socket_lock:
                 self._socket = sock
+            self.generation += 1
             self.status = "connected"
             attempt = 0
 
             dead = threading.Event()
-            reader = threading.Thread(target=self._run_reader, args=(sock, dead), daemon=True)
+            reader = threading.Thread(
+                target=self._run_reader, args=(sock, dead, self.generation), daemon=True
+            )
             reader.start()
             self._run_send_loop(sock, dead)
 
@@ -122,7 +145,7 @@ class _Connection:
                 dead.set()
                 return
 
-    def _run_reader(self, sock: "_ws.WebSocket", dead: threading.Event) -> None:
+    def _run_reader(self, sock: "_ws.WebSocket", dead: threading.Event, generation: int) -> None:
         while not dead.is_set():
             try:
                 text = sock.recv()
@@ -134,7 +157,7 @@ class _Connection:
                 dead.set()
                 return
             timing.mark("received", text)
-            self.inbox.put(text)
+            self.inbox.put((generation, text))
 
     def _wait_backoff(self, attempt: int) -> None:
         delay = RECONNECT_BACKOFF[attempt] if attempt < len(RECONNECT_BACKOFF) else RECONNECT_STEADY
@@ -144,10 +167,16 @@ class _Connection:
 _conn: _Connection | None = None
 
 
-def connect(server_url: str, room_id: str, on_message: Callable[[dict], None]) -> None:
+def connect(
+    server_url: str,
+    room_id: str,
+    on_message: Callable[[dict], None],
+    on_synced: Callable[[set[str]], None] | None = None,
+) -> None:
     """Connect to `<server_url>/ws/rooms/<room_id>` and return immediately.
 
-    `on_message` is called (on the main thread, from `drain()`) with each `ops` message.
+    `on_message` is called (on the main thread, from `drain()`) with each `ops` message, and
+    `on_synced` once, at the first `synced`, with the IDs the room's catch-up mentioned.
     Replaces any existing connection. Raises `ValueError` for a `room_id` the server
     would refuse anyway, without touching the network.
     """
@@ -157,7 +186,7 @@ def connect(server_url: str, room_id: str, on_message: Callable[[dict], None]) -
     if _conn is not None:
         _conn.stop()
     url = f"{server_url.rstrip('/')}/ws/rooms/{room_id}"
-    _conn = _Connection(url, on_message)
+    _conn = _Connection(url, on_message, on_synced)
     if not bpy.app.timers.is_registered(_tick):
         bpy.app.timers.register(_tick, first_interval=DRAIN_INTERVAL, persistent=True)
 
@@ -185,6 +214,17 @@ def status() -> str:
     return _conn.status if _conn is not None else "disconnected"
 
 
+def synced() -> bool:
+    """Whether the current socket has received the room's catch-up (#20). False while
+    connecting or reconnecting, and between connecting and the server's `synced`."""
+    conn = _conn
+    return (
+        conn is not None
+        and conn.status == "connected"
+        and conn.synced_generation == conn.generation
+    )
+
+
 def _tick() -> float:
     drain()
     return DRAIN_INTERVAL
@@ -201,14 +241,37 @@ def drain() -> None:
     conn = _conn
     while True:
         try:
-            raw = conn.inbox.get_nowait()
+            generation, raw = conn.inbox.get_nowait()
         except queue.Empty:
             return
         timing.mark("drained", raw)
-        _handle_message(conn.on_message, raw)
+        _handle_message(conn, generation, raw)
 
 
-def _handle_message(on_message: Callable[[dict], None], raw: str) -> None:
+def _note_catch_up_ids(conn: _Connection, message: dict) -> None:
+    ops = message.get("ops")
+    if not isinstance(ops, list):
+        return
+    for op in ops:
+        if isinstance(op, dict) and isinstance(op.get("object"), str):
+            conn.catch_up_ids.add(op["object"])
+
+
+def _handle_synced(conn: _Connection, generation: int, message: dict) -> None:
+    if generation != conn.generation:
+        return  # from a socket that has since died
+    conn.synced_generation = generation
+    conn.synced_seq = message.get("seq")
+    log("client: in sync with the room at seq", conn.synced_seq)
+    if conn.joined:
+        return  # a reconnect: edits made meanwhile are already in the outbox
+    conn.joined = True
+    known, conn.catch_up_ids = conn.catch_up_ids, set()
+    if conn.on_synced is not None:
+        conn.on_synced(known)
+
+
+def _handle_message(conn: _Connection, generation: int, raw: str) -> None:
     try:
         message = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -222,6 +285,11 @@ def _handle_message(on_message: Callable[[dict], None], raw: str) -> None:
         log("client: server rejected a message:", message.get("message"))
         return
     if message_type == "ops":
-        on_message(message)
+        if not conn.joined:
+            _note_catch_up_ids(conn, message)
+        conn.on_message(message)
+        return
+    if message_type == "synced":
+        _handle_synced(conn, generation, message)
         return
     log("client: ignoring unknown message type", message_type)
