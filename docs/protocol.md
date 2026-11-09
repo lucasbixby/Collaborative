@@ -5,8 +5,8 @@ plain dictionaries, and the server parses them with the models in
 `server/app/sync/operations.py` (#7). Both sides follow this document; when they
 disagree, this document is right and the code is fixed.
 
-**Version 1** · status: `ops`, `error` and `synced` specified, with catch-up on connect (#20);
-`join` (auth) TODO with #16.
+**Version 1** · status: `ops`, `error` and `synced` specified, with catch-up on connect (#20)
+and sign-in by header (#16, #17).
 Design decisions D-022 to D-026 in [devlog.md](devlog.md), based on the change-detection spike
 ([spike-notes.md](spike-notes.md)).
 
@@ -30,10 +30,11 @@ Every message is an object with a protocol version `v` and a `type`.
 | `ops` | add-on → server → other add-ons | A batch of operations | **Specified below** |
 | `synced` | server → add-on | The room's catch-up is complete | **Specified below** (#20) |
 | `error` | server → add-on | A message was rejected, and why | **Specified below** |
-| `join` | add-on → server | Introduce the client (auth token) | TODO with #16 |
 
-There's no `catch_up` request and no `snapshot` message: the server sends every new connection
-the room's state as ordinary `ops` messages, then `synced` (D-084; see [Connection](#connection)).
+There's no `join` message: the token goes in the connection's `Authorization` header instead
+(D-091; see [Access](#access)). There's no `catch_up` request and no `snapshot` message either:
+the server sends every new connection the room's state as ordinary `ops` messages, then
+`synced` (D-084; see [Connection](#connection)).
 
 ### `ops`: a batch of operations
 
@@ -60,8 +61,9 @@ re-serialized from the parsed, validated message rather than the raw text (#11).
 ### `error`: a message was rejected
 
 Sent to the sender only, in reply to one message that failed validation — bad schema,
-unknown field, oversized, or any other rule under [Rules](#rules) below — or that the server
-couldn't save to its log. The connection stays open: one bad message doesn't disconnect a client.
+unknown field, oversized, or any other rule under [Rules](#rules) below — that the server
+couldn't save to its log, or that came from a viewer (`"viewers can't edit"`, [Access](#access)).
+The connection stays open: one bad message doesn't disconnect a client.
 
 ```json
 {
@@ -208,8 +210,10 @@ Only the common fields.
      (D-062). A client reconnecting after a network drop reuses its origin, and the server may
      still think the old socket is alive. The older connection gets an `error` for anything it
      sends from then on. Closing a connection frees its origin, unless it has already moved on.
-   - This isn't proof of identity (D-063): every client in a room sees the others' origins, so
-     one could claim another's and lock it out, until auth ties origins to users (#16 / #17).
+   - An origin belongs to the first user who sends as it, for good, across rooms and server
+     restarts (#17, closing D-063). Every client in a room sees the others' origins, but another
+     user claiming one gets `"origin … belongs to another user"`. The takeover above is only
+     ever by the same user, which is what a reconnect is.
 5. **Only allow-listed properties are ever applied.** Receivers map `property` to Blender
    attributes through a fixed table, never by passing the received name to `setattr`.
 6. **Senders coalesce.** Within one batch there is at most one `set` per (`object`, `property`),
@@ -474,12 +478,37 @@ Deleting it:
 
 ## Connection
 
-`ws://<host>:8000/ws/rooms/{room_id}`, with the auth token sent on connect.
+`ws://<host>:8000/ws/rooms/{room_id}`, with the header `Authorization: Bearer <token>`.
 
 `room_id` must match `^[A-Za-z0-9_-]{1,64}$`; the server closes the connection with code
 `1008` otherwise. A room's connections exist only while at least one client is in it, but its
-operations and snapshots are kept (#19, #20). No auth yet (TODO #16 / #17): any client may join
-any room.
+operations and snapshots are kept (#19, #20).
+
+### Access (#16, #17)
+
+The token comes from `POST /api/auth/login` (below) and goes in the `Authorization` header,
+**never the URL**: URLs end up in access logs, and a token in a query string is ignored. The
+server accepts the socket, checks the token and the user's role in the room, and if either
+fails closes it **before any catch-up**:
+
+| Close code | Reason text (for people) | Meaning | Client should |
+|---|---|---|---|
+| `4401` | `sign in first`, or `invalid or expired token; sign in again` | No token, a bad one, or an expired one | Stop reconnecting; ask the user to sign in |
+| `4403` | `no access to room <id>` | The room doesn't exist, or the user isn't a member: the same reason for both, so it doesn't tell anyone which rooms exist | Stop reconnecting; the user needs an invite (or to create the room) |
+| `4403` | `removed from room <id>` | An owner removed this user while connected | Same |
+
+Retrying with the same token can only fail the same way, so the add-on stops instead of backing
+off and retrying.
+
+Roles, per room: **owner** > **editor** > **viewer**.
+
+- Everyone in the room gets the catch-up and every live `ops`.
+- An owner or editor may send `ops`.
+- A viewer's `ops` get `{"type": "error", "message": "viewers can't edit"}`. They aren't
+  parsed, logged or forwarded, and the connection stays open.
+- A role change made over REST applies to open connections from their next message: a
+  downgraded editor stays connected, as a viewer. A removed member's sockets are closed with
+  `4403` (D-095).
 
 ### Catch-up on connect (#20)
 
@@ -506,9 +535,41 @@ The client applies catch-up `ops` like any other (rules 1–3), and skips any of
 **Snapshots** are a cache over the log, which is never trimmed: one is written whenever a
 room's log has grown `COLLAB_SNAPSHOT_EVERY` operations (default 500) past the last (D-082).
 
-### REST (#20)
+### REST
 
-No auth yet (TODO #16 / #17). `room_id` follows the same pattern as the socket, or the reply is `422`.
+Every route except `/health`, register and login needs `Authorization: Bearer <token>`, or the
+reply is `401`. `room_id` follows the same pattern as the socket, or the reply is `422`. Routes
+under a room are for its members (`403`), and an unknown room is `404`.
+
+**Accounts (#16).** Usernames are 3–32 of `a-z 0-9 . _ -`, lowercased (`Lucas` is `lucas`);
+passwords are at least 8 characters.
+
+| Request | Response |
+|---|---|
+| `POST /api/auth/register` `{"username", "password"}` | `201` `{"id", "username", "created_at"}`, or `409` if the name is taken |
+| `POST /api/auth/login` `{"username", "password"}` | `{"token", "user": {...}}`, or `401` `wrong username or password`, the same for both |
+| `GET /api/auth/me` | the signed-in user |
+
+A token is valid for `COLLAB_TOKEN_TTL_HOURS` (default 168, one week). There's no revocation:
+signing out forgets the token on that machine.
+
+**Rooms (#18).** A room must be created before anyone can join it.
+
+| Request | Who | Response |
+|---|---|---|
+| `POST /api/rooms` `{"room_id"}` | anyone signed in | `201`, the creator is owner; `409` if the id is taken |
+| `GET /api/rooms` | anyone signed in | `[{"room_id", "role", "created_at"}]`: my rooms |
+| `GET /api/rooms/{id}` | members | the room, my role, and `members: [{"username", "role", "joined_at"}]` |
+| `POST /api/rooms/{id}/invites` `{"role": "editor" \| "viewer", "expires_in_hours": 24}` | owners | `201` `{"code", "room_id", "role", "expires_at"}`. 1–720 hours |
+| `DELETE /api/rooms/{id}/invites/{code}` | owners | `204`; the code stops working |
+| `POST /api/rooms/join/{code}` | anyone signed in | `{"room_id", "role"}`. `404` unknown code, `410` expired or revoked. A member keeps the higher of their role and the invite's |
+| `PATCH /api/rooms/{id}/members/{username}` `{"role"}` | owners | the member's new role |
+| `DELETE /api/rooms/{id}/members/{username}` | owners, or the member themselves | `204` |
+
+An invite code works for anyone who has it, any number of times, until it expires or is
+revoked. A room always keeps an owner: demoting or removing the last one is `409`.
+
+**State (#20).** For members, viewers included.
 
 | Request | Response |
 |---|---|

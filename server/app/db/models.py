@@ -85,6 +85,17 @@ class Invite(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class OriginOwner(Base):
+    """Which user an `origin` belongs to (#17, D-063): the first user to send as it. Kept in
+    the database so a restart doesn't let someone else claim it."""
+
+    __tablename__ = "origin_owners"
+
+    origin: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 class Operation(Base):
     """One relayed operation (#19).
 

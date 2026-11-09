@@ -10,7 +10,8 @@
     scripts/latency_run.py idle --url ws://localhost:8000 --name docker   against a server you run
 
 Starts its own server with a temporary database (port 8000 must be free), unless --url is given.
-Either way it registers a throwaway user (#16) and signs everything in as them.
+Either way it registers a throwaway user and creates --room as them (#16, #18), so against a
+server you run, pick a room that doesn't exist yet.
 Blender uses throwaway settings, so yours aren't touched. Then read the results with
 scripts/latency_report.py latency-results/<name>. Needs server/.venv.
 """
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -61,11 +63,18 @@ def post(url: str, body: dict, token: str | None = None) -> dict:
         return json.loads(response.read())
 
 
-def sign_up(server: str) -> str:
-    """Register a throwaway user and return its token."""
+def sign_up(server: str, room: str) -> str:
+    """Register a throwaway user, make the room as them (#18), and return their token."""
     credentials = {"username": f"latency-{secrets.token_hex(4)}", "password": secrets.token_urlsafe(16)}
     post(f"{server}/api/auth/register", credentials)
-    return post(f"{server}/api/auth/login", credentials)["token"]
+    token = post(f"{server}/api/auth/login", credentials)["token"]
+    try:
+        post(f"{server}/api/rooms", {"room_id": room}, token)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            raise SystemExit(f"Room {room!r} already exists on {server}; pass another --room.") from None
+        raise
+    return token
 
 
 def server_is_up() -> bool:
@@ -152,7 +161,7 @@ def main() -> int:
     blenders = {}
     load = None
     try:
-        args.token = sign_up(http_url(url))
+        args.token = sign_up(http_url(url), args.room)
         for index, client in enumerate(clients):
             blenders[client] = start_blender(client, out, scratch, sync, args, 820 * (client == "B"))
         wait_for(lambda: (sync / "ready").exists(), 60, "the Blenders to get ready")

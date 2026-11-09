@@ -8,6 +8,10 @@ remove themselves (leave), except the last owner.
 Invites: the owner gets a random code once; only its SHA-256 is stored. A code works for anyone
 who has it, any number of times, until it expires or is revoked: a link to paste into a chat.
 Joining with a code never lowers a role someone already has.
+
+A role change or a removal also reaches the user's open sockets at once
+(app.realtime.websocket.member_changed): a removed member is closed with 4403, and a new role
+applies from their next message, so a downgraded editor stays connected as a viewer.
 """
 
 import hashlib
@@ -24,6 +28,7 @@ from app.auth.dependencies import CurrentUser, Session
 from app.auth.membership import ROOM_ID_PATTERN, Member, Membership
 from app.auth.permissions import Role, can_manage, higher
 from app.db.models import Invite, Room, RoomMember, User
+from app.realtime.websocket import member_changed
 
 router = APIRouter()
 
@@ -168,6 +173,7 @@ async def join_by_invite(code: str, user: CurrentUser, session: Session) -> Join
     else:
         membership.role = higher(Role(membership.role), offered)
     await session.commit()
+    await member_changed(invite.room_id, user.id, Role(membership.role))
     return Joined(room_id=invite.room_id, role=membership.role)
 
 
@@ -207,6 +213,7 @@ async def change_role(
         await _keep_an_owner(session, member.room.id, target)
     target.role = role
     await session.commit()
+    await member_changed(member.room.id, user.id, role)
     return MemberOut(username=user.username, role=role, joined_at=target.joined_at)
 
 
@@ -214,9 +221,10 @@ async def change_role(
 async def remove_member(username: str, member: Member, session: Session) -> Response:
     if username.lower() != member.user.username:
         _require_owner(member)
-    _user, target = await _target(session, member, username)
+    user, target = await _target(session, member, username)
     await _keep_an_owner(session, member.room.id, target)
     await session.delete(target)
     await session.commit()
+    await member_changed(member.room.id, user.id, None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

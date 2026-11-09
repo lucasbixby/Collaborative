@@ -34,6 +34,10 @@ class ConnectionManager:
         del self._rooms[room_id]
         return 0
 
+    def sockets(self, room_id: str) -> list[WebSocket]:
+        """A copy of the room's sockets, safe to iterate while they leave."""
+        return list(self._rooms.get(room_id, ()))
+
     async def broadcast(self, room_id: str, text: str, *, exclude: WebSocket) -> None:
         """Send `text` to every socket in `room_id` except `exclude`.
 

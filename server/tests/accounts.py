@@ -1,6 +1,7 @@
-"""Helpers for signing test clients in (#16). The relay and catch-up tests are about relaying,
-so their `client` is signed in as one user; the access tests (tests/auth/) sign in several and
-check every refusal."""
+"""Helpers for signing test clients in (#16) and making rooms (#18). The relay and catch-up tests
+are about relaying, so their `client` is signed in as one user who owns every room it joins
+(tests/catchup.py's `joined`); the access tests (tests/auth/) sign in several users and check
+every refusal."""
 
 PASSWORD = "correct horse battery"
 
@@ -32,3 +33,9 @@ def sign_in(test_client, username: str = "tester") -> str:
     token = token_for(test_client, username)
     test_client.headers.update(bearer(token))
     return token
+
+
+def ensure_room(test_client, room_id: str, headers: dict | None = None) -> None:
+    """Create the room as the signed-in user, or do nothing if it exists already."""
+    response = test_client.post("/api/rooms", json={"room_id": room_id}, headers=headers or {})
+    assert response.status_code in (201, 409), response.text

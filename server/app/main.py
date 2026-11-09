@@ -16,6 +16,7 @@ from app.db.session import create_engine, create_session_factory, create_tables
 from app.realtime import websocket
 from app.realtime.tasks import AppTasks
 from app.sync.state import SnapshotScheduler
+from app.sync.validation import OriginRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         app.state.sessions = create_session_factory(engine)
         app.state.tasks = AppTasks()
         app.state.room_locks = defaultdict(asyncio.Lock)
+        app.state.origins = OriginRegistry()
         app.state.snapshots = SnapshotScheduler(app.state.sessions, app.state.tasks.spawn)
         yield
         # Handlers and their database work first: disposing the engine while a query is still

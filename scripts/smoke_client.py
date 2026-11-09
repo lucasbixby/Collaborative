@@ -3,9 +3,9 @@ on the host but Docker and curl; `websockets` comes with uvicorn[standard].
 
     relay <room>     A sends a create and two sets, B must receive all three, A must get no echo
     hold <room>      stay connected until the server closes the connection
-    refused <room>   without a token, the server must close with 4401 before any catch-up
+    refused <room> <code>   the server must close with <code> (4401, 4403) before any catch-up
 
-Signs in with COLLAB_TOKEN (#16).
+Signs in with COLLAB_TOKEN (#16), if it's set.
 """
 
 import asyncio
@@ -50,9 +50,9 @@ async def _caught_up(ws) -> None:
         pass
 
 
-def _connect(room: str, signed_in: bool = True):
+def _connect(room: str):
     token = os.environ.get("COLLAB_TOKEN", "")
-    headers = {"Authorization": f"Bearer {token}"} if signed_in and token else {}
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     return websockets.connect(f"{BASE_URL}/{room}", additional_headers=headers)
 
 
@@ -84,20 +84,20 @@ async def hold(room: str) -> int:
     return 0
 
 
-async def refused(room: str) -> int:
-    async with _connect(room, signed_in=False) as ws:
+async def refused(room: str, code: str) -> int:
+    async with _connect(room) as ws:
         try:
             first = await asyncio.wait_for(ws.recv(), TIMEOUT)
         except websockets.exceptions.ConnectionClosed:
-            if ws.close_code == 4401:
-                print(f"refused with 4401: {ws.close_reason}")
+            if ws.close_code == int(code):
+                print(f"refused with {code}: {ws.close_reason}")
                 return 0
-            print(f"closed with {ws.close_code}, not 4401", file=sys.stderr)
+            print(f"closed with {ws.close_code}, not {code}", file=sys.stderr)
             return 1
-        print(f"got a message without a token: {first}", file=sys.stderr)
+        print(f"got a message instead of a {code} close: {first}", file=sys.stderr)
         return 1
 
 
 if __name__ == "__main__":
     command = {"relay": relay, "hold": hold, "refused": refused}[sys.argv[1]]
-    sys.exit(asyncio.run(command(sys.argv[2])))
+    sys.exit(asyncio.run(command(*sys.argv[2:])))

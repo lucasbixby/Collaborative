@@ -20,7 +20,7 @@ from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import settings
-from app.realtime.websocket import manager, origins
+from app.realtime.websocket import manager
 from app.sync import log as operation_log
 from tests.catchup import joined
 
@@ -311,10 +311,10 @@ def test_disconnect_releases_the_origin(client, room):
         a.send_text(json.dumps(MOVE_AND_ROTATE))
         a.send_text(json.dumps(_as_origin(MOVE_AND_ROTATE, OTHER_ORIGIN)))
         assert json.loads(a.receive_text())["type"] == "error"  # so the pin has happened
-        assert [key for key in origins._holders if key[0] == room_id]
+        assert [key for key in client.app.state.origins._holders if key[0] == room_id]
 
-    assert not [key for key in origins._holders if key[0] == room_id]
-    assert not [key for key in origins._pins if key[0] == room_id]
+    assert not [key for key in client.app.state.origins._holders if key[0] == room_id]
+    assert not [key for key in client.app.state.origins._pins if key[0] == room_id]
 
 
 def test_an_unexpected_exception_cannot_leak_a_pinned_origin(client, room, monkeypatch):
@@ -328,8 +328,8 @@ def test_an_unexpected_exception_cannot_leak_a_pinned_origin(client, room, monke
         a.send_text(json.dumps(MOVE_AND_ROTATE))
         a.receive_text()
 
-    assert not [key for key in origins._pins if key[0] == room_id]
-    assert not [key for key in origins._holders if key[0] == room_id]
+    assert not [key for key in client.app.state.origins._pins if key[0] == room_id]
+    assert not [key for key in client.app.state.origins._holders if key[0] == room_id]
 
 
 # -- Operation log (#19) ------------------------------------------------------------------
@@ -504,7 +504,10 @@ def test_disconnect_leaves_others_working_and_empties_the_room(client, room):
 
 
 def test_bad_room_id_is_refused(client):
-    with pytest.raises(WebSocketDisconnect) as exc_info, _ws(client, "bad room!"):
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect("/ws/rooms/bad room!"),
+    ):
         pass
 
     assert exc_info.value.code == 1008
@@ -517,4 +520,4 @@ def test_connect_is_logged(client, room, caplog):
     with _ws(client, room_id):
         pass
 
-    assert f"connect room={room_id} clients=1" in caplog.text
+    assert f"connect room={room_id} user=tester role=owner clients=1" in caplog.text
