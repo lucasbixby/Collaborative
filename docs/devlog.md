@@ -1119,8 +1119,9 @@ smoke test sign in too. One PR, three commits, one per issue.
   name kept, password not), wrong password, unreachable server, sign-out, and the panel text.
 - Mutation-checked: without the viewer check, without the origin owner check, and with
   `member_changed` doing nothing, each fails the tests that cover it (2, 7 and 4 tests).
-- Runs: server suite 3 times (see the PR for the counts), add-on, `npm run build`, and
-  `docker_smoke.sh` all pass.
+- Runs: server suite 3 times, 732 passed each, no hangs; add-on 160 passed; `ruff` clean on
+  both and on `scripts/`; `npm run build` passes; `docker_smoke.sh` passes (4401, 4403, relay
+  with tokens, stop in 0 s with a client connected, restart and volume checks).
 
 **Open / follow-up:**
 - No rate limiting on login or register: scrypt makes each guess cost ~50 ms of server CPU,
