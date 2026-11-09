@@ -248,6 +248,17 @@ Only the common fields.
 - Loose edges: `create` carries only vertices and faces, so a Circle arrives as bare vertices
 - Selection, viewport and other per-user state (never synced)
 
+## Known divergences
+
+Found by the convergence tests (#21); each is a strict xfail there, so a fix shows up.
+
+- **Two objects given the same name.** Blender keeps object names unique: whichever object takes
+  a name second becomes `Name.001`. If two clients rename different objects to the same name at
+  once, each applies the other's rename second, so each ends with a different object called
+  `Name.001`, and nothing sends a correction. Same cause as merge on join's `Cube.001`.
+- **A failed write (D-070).** The sender has applied its edit, but nobody else gets it, and its
+  own catch-up can't undo it (its version is newer than the room's).
+
 ## JSON Schema
 
 The formal version of the `ops` message ([JSON Schema 2020-12](https://json-schema.org/)).

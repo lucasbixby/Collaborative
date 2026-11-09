@@ -56,6 +56,11 @@ mouse drags don't exist, so cover those by hand (below).
 `tests/test_blender_assumptions.py` holds facts about Blender that change detection
 depends on. Add to it as the spike finds more.
 
+`tests/test_convergence_vectors.py` feeds the shared scenarios in `tests/vectors/convergence.json`
+(repo root, written by the server's convergence test, #21) through the real `apply_message` and
+checks the scene matches the reference model's. A scenario marked `known_divergence` is a
+strict xfail: today that's two objects renamed to the same name (Blender adds `.001`).
+
 ### 2. Interactive, one Blender (for UI and real mouse edits)
 
 Either:
