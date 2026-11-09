@@ -1,12 +1,16 @@
 """Test client for docker_smoke.sh. It runs inside the container, so the smoke test needs nothing
 on the host but Docker and curl; `websockets` comes with uvicorn[standard].
 
-    relay <room>   A sends a create and two sets, B must receive all three, A must get no echo
-    hold <room>    stay connected until the server closes the connection
+    relay <room>     A sends a create and two sets, B must receive all three, A must get no echo
+    hold <room>      stay connected until the server closes the connection
+    refused <room> <code>   the server must close with <code> (4401, 4403) before any catch-up
+
+Signs in with COLLAB_TOKEN (#16), if it's set.
 """
 
 import asyncio
 import json
+import os
 import sys
 import uuid
 
@@ -46,9 +50,14 @@ async def _caught_up(ws) -> None:
         pass
 
 
+def _connect(room: str):
+    token = os.environ.get("COLLAB_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return websockets.connect(f"{BASE_URL}/{room}", additional_headers=headers)
+
+
 async def relay(room: str) -> int:
-    uri = f"{BASE_URL}/{room}"
-    async with websockets.connect(uri) as sender, websockets.connect(uri) as receiver:
+    async with _connect(room) as sender, _connect(room) as receiver:
         await _caught_up(sender)
         await _caught_up(receiver)
         messages = _messages()
@@ -68,13 +77,27 @@ async def relay(room: str) -> int:
 
 
 async def hold(room: str) -> int:
-    async with websockets.connect(f"{BASE_URL}/{room}") as ws:
+    async with _connect(room) as ws:
         print("connected", flush=True)
         await ws.wait_closed()
         print(f"closed by the server with code {ws.close_code}")
     return 0
 
 
+async def refused(room: str, code: str) -> int:
+    async with _connect(room) as ws:
+        try:
+            first = await asyncio.wait_for(ws.recv(), TIMEOUT)
+        except websockets.exceptions.ConnectionClosed:
+            if ws.close_code == int(code):
+                print(f"refused with {code}: {ws.close_reason}")
+                return 0
+            print(f"closed with {ws.close_code}, not {code}", file=sys.stderr)
+            return 1
+        print(f"got a message instead of a {code} close: {first}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    command = {"relay": relay, "hold": hold}[sys.argv[1]]
-    sys.exit(asyncio.run(command(sys.argv[2])))
+    command = {"relay": relay, "hold": hold, "refused": refused}[sys.argv[1]]
+    sys.exit(asyncio.run(command(*sys.argv[2:])))

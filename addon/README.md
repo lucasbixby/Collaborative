@@ -5,7 +5,8 @@ Targets **Blender 5.2 LTS** (bundled Python 3.13).
 | File | Role |
 |---|---|
 | `__init__.py` | `bl_info`, register / unregister |
-| `preferences.py` | Server URL and auth token |
+| `preferences.py` | Server URL, Sign in / Sign out (keeps a token, never the password) |
+| `account.py` | `POST /api/auth/login` with urllib, for Sign in |
 | `panel.py`, `operators.py` | Sidebar UI: join / leave room, status |
 | `detect.py` | Detect local changes → operations (the first spike) |
 | `apply.py` | Apply remote operations, guarded against echo loops |
@@ -78,8 +79,27 @@ Starts clients **A** and **B** sharing one terminal; every `log(...)` line says 
 client wrote it. Ctrl+C closes both.
 
 **Testing sync by hand:** start the server (`uvicorn app.main:app`, or `docker compose up`;
-see `server/README.md`), then **Join room** in both A and B with the same Room ID. The two
-Blenders don't need the same file (#20):
+see `server/README.md`). Since #16–#18 you need accounts and a room first: see "First run" in
+the [main README](../README.md). The short way, from `server/`:
+
+```bash
+python3 scripts/admin.py create-user alice && python3 scripts/admin.py create-user bob
+python3 scripts/admin.py create-room demo --owner alice
+python3 scripts/admin.py add-member demo bob --role editor
+```
+
+Then in each Blender, Edit > Preferences > Add-ons > Collaborative > **Sign in** (A as alice, B
+as bob), and **Join room** in both with the same Room ID. A and B share one preferences file, so
+each signs in for itself after starting; if preferences auto-save is on, whichever quits last
+leaves its token saved for next time.
+
+- **Refusals.** Not signed in: the panel says "Sign in first". Not a member: "No access to
+  demo". The client doesn't retry either (a 4401 / 4403 close, `docs/protocol.md`); sign in, or
+  get invited, then press Join again.
+- **Viewers** see everything live but their own edits stay local: the server answers each with
+  an `error` ("viewers can't edit"), which is logged in the terminal.
+
+The two Blenders don't need the same file (#20):
 
 - **Joining catches up.** The server first sends the room's current state as ordinary
   operations, and the panel shows "Catching up…" until it's in. A Blender with an empty scene

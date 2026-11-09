@@ -290,6 +290,7 @@ def begin():
         bpy.context.window_manager.room_id = os.environ.get("LATENCY_ROOM", "latency")
         prefs = bpy.context.preferences.addons["collaborative_blender"].preferences
         prefs.server_url = os.environ.get("LATENCY_URL", "ws://localhost:8000")
+        prefs.auth_token = os.environ.get("LATENCY_TOKEN", "")
         with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
             bpy.ops.collaborative.join_room()
         say(f"Blender {bpy.app.version_string}, {SCENARIO}, joined {prefs.server_url}")

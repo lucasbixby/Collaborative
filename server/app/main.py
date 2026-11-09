@@ -10,11 +10,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, rooms, snapshots
+from app.auth.tokens import MIN_KEY_BYTES
 from app.config import DEFAULT_SECRET_KEY, settings
 from app.db.session import create_engine, create_session_factory, create_tables
 from app.realtime import websocket
 from app.realtime.tasks import AppTasks
 from app.sync.state import SnapshotScheduler
+from app.sync.validation import OriginRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,15 @@ def _configure_logging() -> None:
         app_logger.addHandler(handler)
 
 
+_DEFAULT_KEY_WARNING = """
+************************************************************************************
+  COLLAB_SECRET_KEY is the default, dev-only value, and it signs login tokens: anyone
+  who knows it (it's in the source) can sign in as any user. Set your own before
+  running this anywhere other people can reach it, e.g.
+      COLLAB_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+************************************************************************************"""
+
+
 def create_app(database_url: str | None = None) -> FastAPI:
     """Build the app. The database is only opened at startup, in `lifespan`, so importing this
     module touches no files, and each app instance has its own engine (D-065)."""
@@ -44,15 +55,18 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.secret_key == DEFAULT_SECRET_KEY:
+            logger.warning(_DEFAULT_KEY_WARNING)
+        elif len(settings.secret_key.encode()) < MIN_KEY_BYTES:
             logger.warning(
-                "COLLAB_SECRET_KEY is the default, dev-only value. Set your own before "
-                "running this anywhere other people can reach it."
+                "COLLAB_SECRET_KEY is under %d bytes, which makes tokens easier to forge",
+                MIN_KEY_BYTES,
             )
         engine = create_engine(database_url or settings.database_url)
         await create_tables(engine)
         app.state.sessions = create_session_factory(engine)
         app.state.tasks = AppTasks()
         app.state.room_locks = defaultdict(asyncio.Lock)
+        app.state.origins = OriginRegistry()
         app.state.snapshots = SnapshotScheduler(app.state.sessions, app.state.tasks.spawn)
         yield
         # Handlers and their database work first: disposing the engine while a query is still

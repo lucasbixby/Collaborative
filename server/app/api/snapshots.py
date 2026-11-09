@@ -2,27 +2,26 @@
 
 The socket already sends a joining client the room's state (app.realtime.websocket), so these
 are for anything else that wants to look: the web UI, scripts, debugging. Both read through
-the same functions the socket uses. No auth yet: TODO(#16/#17) check the caller may see the room.
+the same functions the socket uses. Both are for the room's members, viewers included (#17).
 """
 
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Path, Query, Request
+from fastapi import APIRouter, Query, Request
 
+from app.auth.membership import Member
 from app.sync import log
 from app.sync.state import load_state
 
 router = APIRouter()
 
-# The socket's own room pattern (app.realtime.websocket), so both accept the same rooms.
-RoomId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
-
 
 @router.get("/{room_id}/snapshot")
-async def get_snapshot(request: Request, room_id: RoomId) -> dict:
+async def get_snapshot(request: Request, member: Member) -> dict:
     """The room's current state as ops (latest snapshot + log after it), and the last `seq`
-    included. An unknown room is just empty: rooms aren't records yet."""
+    included."""
+    room_id = member.room.id
     async with request.app.state.sessions() as session:
         state, seq = await load_state(session, room_id)
     return {"room_id": room_id, "seq": seq, "ops": state.to_ops()}
@@ -31,12 +30,13 @@ async def get_snapshot(request: Request, room_id: RoomId) -> dict:
 @router.get("/{room_id}/operations")
 async def get_operations(
     request: Request,
-    room_id: RoomId,
+    member: Member,
     since: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=log.MAX_SINCE_LIMIT)] = log.MAX_SINCE_LIMIT,
 ) -> dict:
     """Log rows with `seq` above `since`, oldest first. The cursor is `seq`, the server's
     arrival order, not a Lamport time: pass the last row's `seq` to get the next page."""
+    room_id = member.room.id
     async with request.app.state.sessions() as session:
         rows = await log.since(session, room_id, since, limit)
     return {

@@ -7,12 +7,15 @@ receives. Run two of these in the same room to watch messages relayed between th
 and a third in a different room to see it get nothing.
 
 Usage (from server/, with the server already running — see README):
-    python3 scripts/ws_probe.py <room_id> [--url ws://localhost:8000]
+    python3 scripts/ws_probe.py <room_id> [--url ws://localhost:8000] [--token T]
+
+The token (or COLLAB_TOKEN) is a room member's, from `scripts/admin.py token <user>` (#16).
 """
 
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -53,7 +56,9 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("room_id", help="Must match ^[A-Za-z0-9_-]{1,64}$")
     parser.add_argument("--url", default="ws://localhost:8000", help="Server base URL")
+    parser.add_argument("--token", default=os.environ.get("COLLAB_TOKEN"), help="or COLLAB_TOKEN")
     args = parser.parse_args()
+    headers = {"Authorization": f"Bearer {args.token}"} if args.token else {}
 
     messages = _example_messages()
     uri = f"{args.url}/ws/rooms/{args.room_id}"
@@ -61,10 +66,12 @@ async def main() -> None:
     print("Press Enter to send the next example message, Ctrl+C to quit.")
 
     try:
-        async with websockets.connect(uri) as ws:
+        async with websockets.connect(uri, additional_headers=headers) as ws:
             await asyncio.gather(_receive(ws), _send_on_enter(ws, messages))
     except websockets.exceptions.ConnectionClosed as exc:
         print(f"Connection closed: {exc}")
+        if exc.rcvd is not None and exc.rcvd.code in (4401, 4403):
+            print("Pass a room member's token: --token, or COLLAB_TOKEN.")
 
 
 if __name__ == "__main__":

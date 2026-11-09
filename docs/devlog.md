@@ -28,8 +28,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
 | In progress | — |
-| Next up | #16 Accounts and auth tokens |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency, #20 Snapshots and catch-up |
+| Next up | #21 |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency, #20 Snapshots and catch-up, #16 Accounts and auth tokens, #18 Rooms REST API, #17 Per-room permissions |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -98,7 +98,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-060 | Tombstones are cleared when a different file loads | 11/03 | Active |
 | D-061 | Incoming geometry goes through `mesh.validate()` | 11/03 | Active |
 | D-062 | The newest connection to claim an origin takes it over, rather than being rejected while the old one looks alive | 11/03 | Active |
-| D-063 | Origin checks aren't proof of identity: a live client can still claim another's origin until auth exists | 11/03 | Active |
+| D-063 | Origin checks aren't proof of identity: a live client can still claim another's origin until auth exists | 11/03 | Closed by D-094 |
 | D-064 | A connection that lost its origin stays open and pinned, getting `error` for anything it sends | 11/03 | Active |
 | D-065 | The database engine is built at startup and kept on `app.state`, never at import | 11/03 | Active |
 | D-066 | SQLite connections set a 5 s busy timeout, then WAL | 11/03 | Active |
@@ -124,6 +124,13 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-086 | Catch-up batches carry one origin each and stay under 64 KiB | 11/05 | Active |
 | D-087 | `client.synced()` sits beside `status()`; inbox entries carry their socket's generation | 11/05 | Active |
 | D-088 | Handlers never await the database directly: shielded tasks the app tracks, snapshots counted in memory and written in the background, shutdown ends handlers and that work before disposing the engine | 11/09 | Active |
+| D-089 | Passwords hashed with the stdlib's scrypt (n=2^14, r=8, p=1), a salt each, parameters stored with the hash; usernames lowercased | 11/09 | Active |
+| D-090 | Login tokens are PyJWT HS256 with `sub` and `exp`, a week by default; no revocation | 11/09 | Active |
+| D-091 | The socket's token comes only in the `Authorization` header; accept, then close 4401 / 4403 before catch-up; the add-on stops retrying on either | 11/09 | Active |
+| D-092 | Rooms are created before they're joined; roles live only in `room_members`; ids stay human-readable | 11/09 | Active |
+| D-093 | Invite codes: shown once, stored as SHA-256, usable by anyone any number of times until they expire (24 h default) or are revoked; joining never lowers a role | 11/09 | Active |
+| D-094 | An origin belongs to the first user who sends as it, kept in the database; takeover only by that user (closes D-063) | 11/09 | Active |
+| D-095 | Membership changes reach open sockets at once: a removal closes with 4403, a role change applies from the next message | 11/09 | Active |
 
 ## Log
 
@@ -1057,4 +1064,80 @@ hang, which is why my runs for #20 passed.
   what shows the fix, here and on CI.
 - Snapshot tasks for one room don't queue: ops that arrive while one is running count towards
   the next, so with `COLLAB_SNAPSHOT_EVERY=1` some seqs are skipped. At 500 that's immaterial.
+
+### 2026-11-09 · Accounts, rooms and per-room permissions (#16, #17, #18)
+
+The success criterion is met: only an authenticated user who is a member of a room can join it,
+and only an owner or editor can send operations. Accounts and tokens (#16), rooms, members and
+invites over REST (#18), and roles enforced on the socket, in the REST API and on origins (#17).
+That closes D-063. The add-on signs in from Preferences, and every script, test and the Docker
+smoke test sign in too. One PR, three commits, one per issue.
+
+| Decision | Why |
+|---|---|
+| D-089: Passwords are hashed with `hashlib.scrypt` (n=2^14, r=8, p=1, 32-byte key), with a 16-byte random salt per user, stored as `scrypt$n$r$p$salt$key` and compared with `hmac.compare_digest`. A login for an unknown user checks against a dummy hash. Usernames are 3–32 of `a-z0-9._-`, lowercased; passwords 8–256 characters. | scrypt is memory-hard and in the standard library, so no new dependency, as the issue asked. The parameters travel with each hash, so raising them later only affects new passwords. About 50 ms and 16 MiB per check, run in a thread so the relay isn't held up. The dummy hash makes a wrong username take as long as a wrong password, so neither the message nor the timing says which accounts exist. Lowercasing stops `Lucas` and `lucas` being two accounts that look the same. Rejected: bcrypt or argon2 (new dependencies, and nothing scrypt lacks here). |
+| D-090: Login tokens are JWTs (PyJWT), HS256, signed with `COLLAB_SECRET_KEY`, with `sub` (user id), `iat` and `exp` (`COLLAB_TOKEN_TTL_HOURS`, default 168). `verify_token` checks the signature, the expiry and that the user still exists; the algorithm is pinned. There's no revocation list. The default-key warning is now a banner that says anyone can sign in as anyone, and a key under 32 bytes gets its own warning. | Stateless, so checking a token on every request is one signature check plus the user lookup. Pinning `algorithms` rules out `none` and algorithm confusion. A week keeps people signed in across a project without a refresh flow. Without revocation, signing out only forgets the token on that machine, so a leaked token is good until it expires; changing the key signs everyone out. Rejected: opaque tokens in a table (a lookup per request and a cleanup job, for revocation nobody needs yet). |
+| D-091: The socket takes the token only from `Authorization: Bearer`; a query-string token is ignored. The server accepts, then closes before any catch-up with **4401** (no, bad or expired token) or **4403** (room missing, or not a member: one reason text for both). The add-on treats either as final: status `refused`, no reconnect, and the panel says "Sign in first" or "No access to <room>". | Uvicorn's access log records URLs, so a token there would end up in logs. Closing after accepting is the only way a client sees a code and a reason; a refused handshake is just a failed connect, which the add-on's backoff would retry forever. The same 4403 text for both cases doesn't tell anyone which rooms exist (REST still does: `POST /api/rooms` is `409` for a taken id, so that's not a secret, but the socket needn't add to it). Retrying with the same token can only fail the same way, so the backoff loop doesn't hammer the server. |
+| D-092: A room is a record and must be created before anyone joins it; the creator is its owner. Its id stays the human-readable string the panel uses (`demo`). `rooms.created_by` is only a record: who may do what is in `room_members`, and a room always keeps at least one owner. | Without a record there's no one to ask "who is in this room". Readable ids keep the Blender panel working as it does. Keeping roles in one place means "owner" can't be true in two tables and false in one; several owners are allowed, so ownership can be handed over. A room's log is keyed by its id, so the first person to create `demo` on an existing database gets the operations `demo` had from before accounts. That's fine for dev data and is noted in `server/README.md`. |
+| D-093: Invites: the owner gets a random 128-bit code once; only its SHA-256 is stored. Role `editor` or `viewer`, expiry 1–720 hours (24 by default). A code works for anyone who has it, any number of times, until it expires or is revoked (`404` unknown, `410` expired or revoked). Joining never lowers a role, and an existing member keeps the higher one. | A link to paste into a team chat is what the demo needs. Single-use codes would mean one per person, and the owner would have to know who's coming. The hash means a copy of the database can't be used to join. A fast hash is enough because the code is random, so there's nothing to guess. Expiry bounds how long a leaked link works, and revoking ends it early. Rejected: emailing invites (no email), and storing the code (it would work from a database backup). |
+| D-094: An origin belongs to the first user who sends as it, recorded in `origin_owners` (origin → user, across all rooms). `OriginRegistry` checks the owner before its D-062 rules, so a takeover is only ever by the same user, and another user gets `origin … belongs to another user`. The registry is now one per app (`app.state.origins`). **Closes D-063.** | D-063 said only auth could tell a reconnect from a spoof, and now it can: the reconnect case is the same user. Keeping the owner in the database means a restart doesn't free an origin for whoever claims it first. It spans rooms because the add-on's origin does, and an origin seen in one room shouldn't be claimable in another. One registry per app because user ids only mean something within one database (tests run many apps in one process). The owner is looked up once per origin per process, through `tasks.shielded` (D-088). |
+| D-095: Membership changes reach open sockets at once. Removing a member closes their sockets in that room with 4403 ("removed from room …"). A role change (or a higher role through an invite) updates the role on their open connections, from their next message, so a downgraded editor stays connected as a viewer. | Removal has to close the socket: a removed member must stop receiving the room too, not just stop sending. A downgrade only has to stop the edits, and staying connected means they keep seeing the room without having to rejoin. Both are in-process, which is all there is (one worker, as the Dockerfile says). The REST handler applies it after the commit, so a socket never has a role the database doesn't. |
+
+**Details:**
+- New: `app/auth/passwords.py`, `tokens.py`, `dependencies.py` (`Session`, `CurrentUser`),
+  `membership.py` (`role_in`, `Member`), `permissions.py` (`Role`, `can_join`,
+  `can_send_operations`, `can_manage`); `app/api/auth.py` and `rooms.py`; models `User`, `Room`,
+  `RoomMember`, `Invite`, `OriginOwner`, and a `UTCDateTime` column type (SQLite drops the time
+  zone, which made `expires_at` compare as naive). SQLite now enforces foreign keys.
+- Changed: `app/realtime/websocket.py` (`_authorize`, `Access` on `websocket.state`, the viewer
+  check before parsing, `_check_origin`, `member_changed`), `app/sync/validation.py`
+  (`OriginRegistry` with owners), `app/api/snapshots.py` (members only), `app/main.py` (the
+  louder warning, `app.state.origins`), `ConnectionManager.sockets`.
+- Add-on: `account.py` (`login` with urllib, `http_url`), Sign in / Sign out in
+  `preferences.py` (the password is a `SKIP_SAVE` operator property, cleared after use),
+  `client.connect(..., token=)` sends the header, the reader uses `recv_data` so a close frame
+  keeps its code, and a 4401 / 4403 close ends the writer with status `refused`. Join is
+  enabled again when refused; `panel.status_text` says why.
+- `server/scripts/admin.py`: `create-user`, `create-room --owner`, `add-member --role`, `token`,
+  against the server's database (works with `docker compose exec`). Every socket script takes
+  `--token` or `COLLAB_TOKEN`. `latency_run.py` registers a throwaway user, creates `--room` as
+  them, passes the token to both Blenders and the load clients, and prints it for
+  `latency_probe.py`. `docker_smoke.sh` registers and signs in with curl, creates the room,
+  checks 4401 without a token and 4403 for a non-member (made with `admin.py`), and connects
+  with a token.
+- Tests: the `client` fixture is signed in as `tester` (`tests/accounts.py`), and
+  `tests/catchup.py`'s `joined` creates the room if it doesn't exist, so the relay and catch-up
+  tests run with every check on. `tests/auth/` covers tokens and scrypt, register / login / me,
+  401 on every protected route, the rooms API (create, 409, list, details, invites: owner only,
+  expired, revoked, reused, never lowering a role; roles; removal; the last owner), and the
+  socket (4401 without or with a bad token, a query-string token ignored, 4403 for non-members
+  and missing rooms, a viewer's catch-up and refused ops, an editor's ops, origins across users,
+  a reconnect taking an origin back, ownership across a restart, removal closing with 4403,
+  downgrade and upgrade on an open connection). `test_admin.py` runs `admin.py` as a process.
+  Add-on: header sent, none without a token, no reconnect after 4401 / 4403, an ordinary close
+  still reconnects, a fresh Join after a refusal, sign-in against a fake login server (token and
+  name kept, password not), wrong password, unreachable server, sign-out, and the panel text.
+- Mutation-checked: without the viewer check, without the origin owner check, and with
+  `member_changed` doing nothing, each fails the tests that cover it (2, 7 and 4 tests).
+- Runs: server suite 3 times, 732 passed each, no hangs; add-on 160 passed; `ruff` clean on
+  both and on `scripts/`; `npm run build` passes; `docker_smoke.sh` passes (4401, 4403, relay
+  with tokens, stop in 0 s with a client connected, restart and volume checks).
+
+**Open / follow-up:**
+- No rate limiting on login or register: scrypt makes each guess cost ~50 ms of server CPU,
+  which also makes a flood of guesses a cheap way to load the server.
+- No token revocation: Sign out only forgets the token locally, and a leaked token is good for
+  up to a week. Changing `COLLAB_SECRET_KEY` signs everyone out.
+- Open registration: anyone who can reach the server can make an account (though not join a
+  room uninvited). A setting to turn it off would help on a shared network.
+- Plain HTTP: passwords and tokens cross the network in the clear unless the server is behind
+  HTTPS / `wss://`.
+- A viewer's add-on still applies its own edits locally; the server refuses each with an error,
+  so the viewer's scene drifts from the room until they rejoin, and dragging logs an error per
+  flush. The add-on could learn its role and stop sending (it isn't told yet).
+- The "last owner" check reads then writes, so two owners demoting each other at the same moment
+  could both succeed. Unlikely with a handful of people; a transaction-level check would fix it.
+- `auth_token` is saved in Blender's `userpref.blend` in plain text when preferences are saved.
+- Presence (#22): who's in a room now; `Access` on each socket is the start of it.
+- The web UI (`web/`) doesn't sign in yet.
 

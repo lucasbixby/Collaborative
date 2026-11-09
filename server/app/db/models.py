@@ -1,15 +1,99 @@
 """SQLAlchemy models: users, rooms, room members, operation log, snapshots."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-# TODO: User, Room, RoomMember(role)
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator):
+    """A timestamp that reads back in UTC. SQLite keeps no time zone, so without this a time
+    written as UTC comes back naive, and comparing it with `datetime.now(UTC)` (an invite's
+    expiry) raises."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
+class User(Base):
+    """An account (#16). `password_hash` is scrypt's output with its salt and parameters
+    (app.auth.passwords), never the password."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class Room(Base):
+    """A room (#18). Its id is the human-readable name clients join by, the same pattern the
+    socket's URL takes. Who may do what is in RoomMember; `created_by` is only a record."""
+
+    __tablename__ = "rooms"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class RoomMember(Base):
+    """One user's role in one room: "owner", "editor" or "viewer" (app.auth.permissions)."""
+
+    __tablename__ = "room_members"
+
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True, index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    joined_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class Invite(Base):
+    """An invite code for a room (#18). Only the code's SHA-256 is stored: the code is shown
+    once, to the owner who made it, so the database alone can't be used to join. A code can be
+    used by any number of people until it expires or is revoked."""
+
+    __tablename__ = "invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class OriginOwner(Base):
+    """Which user an `origin` belongs to (#17, D-063): the first user to send as it. Kept in
+    the database so a restart doesn't let someone else claim it."""
+
+    __tablename__ = "origin_owners"
+
+    origin: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
 class Operation(Base):

@@ -28,17 +28,33 @@ class COLLAB_PT_main(bpy.types.Panel):
         current_status = client.status()
 
         row = layout.row()
-        row.enabled = current_status == "disconnected"
+        row.enabled = current_status in ("disconnected", "refused")
         row.prop(wm, "room_id", text="Room")
 
-        status_text = _STATUS_TEXT[_shown_status()].format(room=wm.room_id)
-        layout.label(text=f"Status: {status_text}")
+        layout.label(text=f"Status: {status_text(wm.room_id)}")
         layout.operator("collaborative.join_room")
         layout.operator("collaborative.leave_room")
 
         layout.separator()
         layout.label(text="Apply (dev aid, #6)")
         layout.operator("collaborative.apply_from_clipboard")
+
+
+# Why the server refused the connection (#16, #17); the client has stopped retrying.
+_REFUSAL_TEXT = {
+    client.CLOSE_UNAUTHENTICATED: "Sign in first (Preferences > Add-ons > Collaborative)",
+    client.CLOSE_FORBIDDEN: "No access to {room}",
+}
+
+
+def status_text(room: str) -> str:
+    shown = _shown_status()
+    if shown == "refused":
+        code, reason = client.refusal() or (None, "")
+        return _REFUSAL_TEXT.get(code, "Refused by the server: {reason}").format(
+            room=room, reason=reason
+        )
+    return _STATUS_TEXT[shown].format(room=room)
 
 
 def _shown_status() -> str:

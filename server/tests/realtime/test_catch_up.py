@@ -22,6 +22,7 @@ from app.db.models import Snapshot
 from app.sync import log as operation_log
 from app.sync.conflicts import RoomState
 from app.sync.operations import parse_message
+from tests.accounts import PASSWORD, bearer, ensure_room, token_for
 from tests.catchup import joined, read_catch_up
 from tests.sync.test_conflicts import A, B, X, Y, create, delete, move
 
@@ -64,7 +65,9 @@ def test_a_new_client_gets_catch_up_then_synced_then_live_ops(client):
 
 
 def test_an_empty_room_sends_only_synced_at_seq_0(client):
-    with client.websocket_connect(f"/ws/rooms/{_room()}") as ws:
+    room = _room()
+    ensure_room(client, room)
+    with client.websocket_connect(f"/ws/rooms/{room}") as ws:
         assert json.loads(ws.receive_text()) == {"v": 1, "type": "synced", "seq": 0}
 
 
@@ -223,12 +226,22 @@ def test_rest_snapshot_matches_what_a_joining_client_gets(client):
     assert sorted(map(json.dumps, body["ops"])) == sorted(map(json.dumps, caught_up))
 
 
-def test_rest_snapshot_of_an_unknown_room_is_empty(client):
+def test_rest_snapshot_of_a_new_room_is_empty(client):
+    ensure_room(client, "nobody-here")
     assert client.get("/api/rooms/nobody-here/snapshot").json() == {
         "room_id": "nobody-here",
         "seq": 0,
         "ops": [],
     }
+
+
+def test_rest_snapshot_and_operations_are_for_members_only(client):
+    room = _room()
+    ensure_room(client, room)
+    outsider = bearer(token_for(client, "outsider"))
+    for path in (f"/api/rooms/{room}/snapshot", f"/api/rooms/{room}/operations"):
+        assert client.get(path, headers=outsider).status_code == 403
+        assert client.get(path.replace(room, "no-such-room")).status_code == 404
 
 
 def test_rest_operations_pages_by_seq(client, read_log):
@@ -254,6 +267,7 @@ def test_rest_operations_pages_by_seq(client, read_log):
 
 
 def test_rest_refuses_a_bad_room_id_and_bad_paging(client):
+    ensure_room(client, "ok")
     assert client.get("/api/rooms/bad%20room/snapshot").status_code == 422
     assert client.get("/api/rooms/bad%20room/operations").status_code == 422
     assert client.get(f"/api/rooms/{'x' * 65}/snapshot").status_code == 422
@@ -298,6 +312,7 @@ def test_a_client_leaving_during_catch_up_releases_the_room(client):
             for obj in objects:
                 await operation_log.append(session, room, parse_message(_ops(create(obj=obj))))
 
+    ensure_room(client, room)
     client.portal.call(_fill)
     for _ in range(10):
         with client.websocket_connect(f"/ws/rooms/{room}") as ws:
@@ -354,10 +369,15 @@ def test_uvicorn_stops_promptly_with_a_client_connected(tmp_path):
     )
     try:
         _wait_until(lambda: _healthy(port), timeout=15)
+        headers = bearer(_sign_up(port, "shutdown"))
+        _post(port, "/api/rooms", {"room_id": "shutdown"}, headers)
 
         async def _client():
             uri = f"ws://127.0.0.1:{port}/ws/rooms/shutdown"
-            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+            async with (
+                websockets.connect(uri, additional_headers=headers) as a,
+                websockets.connect(uri, additional_headers=headers) as b,
+            ):
                 for ws in (a, b):
                     while json.loads(await ws.recv())["type"] != "synced":
                         pass
@@ -382,6 +402,22 @@ def test_uvicorn_stops_promptly_with_a_client_connected(tmp_path):
     assert "Application shutdown complete" in output, output
     assert "Exception terminating connection" not in output
     assert "Traceback" not in output, output
+
+
+def _post(port, path, body, headers=None) -> dict:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read())
+
+
+def _sign_up(port, username) -> str:
+    credentials = {"username": username, "password": PASSWORD}
+    _post(port, "/api/auth/register", credentials)
+    return _post(port, "/api/auth/login", credentials)["token"]
 
 
 def _healthy(port) -> bool:

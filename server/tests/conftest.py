@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.db.models import Operation
 from app.main import create_app
 from app.sync import log
+from tests.accounts import sign_in
 
 
 @pytest.fixture
@@ -29,6 +30,7 @@ class _PoolErrors(logging.Handler):
 
 @pytest.fixture
 def client(database_url) -> Iterator[TestClient]:
+    """A running app, signed in as "tester" (#16); see tests/accounts.py."""
     # Entering the context manager (rather than a bare `TestClient(...)`) gives every
     # websocket_connect() call from this client the same BlockingPortal, i.e. the same
     # background thread and event loop. Without it, concurrent websocket connections
@@ -38,11 +40,19 @@ def client(database_url) -> Iterator[TestClient]:
     pool_logger.addHandler(errors)
     try:
         with TestClient(create_app(database_url)) as test_client:
+            sign_in(test_client)
             yield test_client
     finally:
         pool_logger.removeHandler(errors)
     # Checked after shutdown, so a connection a handler left open is caught too (#20).
     assert errors.messages == [], errors.messages
+
+
+@pytest.fixture
+def anon(database_url) -> Iterator[TestClient]:
+    """A running app with nobody signed in, for the access tests (tests/auth/)."""
+    with TestClient(create_app(database_url)) as test_client:
+        yield test_client
 
 
 @pytest.fixture

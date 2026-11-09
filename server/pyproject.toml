@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "sqlalchemy[asyncio]>=2.0",  # the extra brings greenlet, which async SQLAlchemy needs
     "aiosqlite>=0.20",
+    "PyJWT>=2.8",  # login tokens (#16)
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,9 @@ include = ["app*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 30  # seconds per test, teardown included; pytest-timeout
+# pytest resets warning filters per test, undoing app.auth.tokens' own filter; tests use the
+# 18-byte default key.
+filterwarnings = ["ignore::jwt.warnings.InsecureKeyLengthWarning"]
 
 [tool.ruff]
 line-length = 100

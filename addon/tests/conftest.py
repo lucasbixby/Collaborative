@@ -107,6 +107,8 @@ class FakeRelay:
 
     def __init__(self) -> None:
         self.received: list[str] = []
+        self.authorizations: list[str | None] = []  # each connection's Authorization header
+        self.refuse_with: tuple[int, str] | None = None  # close every connection with this
         self.port: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: websockets.Server | None = None
@@ -139,6 +141,10 @@ class FakeRelay:
         ready.wait(timeout=5)
 
     async def _handler(self, websocket) -> None:
+        self.authorizations.append(websocket.request.headers.get("Authorization"))
+        if self.refuse_with is not None:
+            await websocket.close(*self.refuse_with)  # as the real relay does after accepting
+            return
         self._sockets.append(websocket)
         try:
             async for message in websocket:

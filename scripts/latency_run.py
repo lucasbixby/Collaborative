@@ -10,18 +10,23 @@
     scripts/latency_run.py idle --url ws://localhost:8000 --name docker   against a server you run
 
 Starts its own server with a temporary database (port 8000 must be free), unless --url is given.
+Either way it registers a throwaway user and creates --room as them (#16, #18), so against a
+server you run, pick a room that doesn't exist yet.
 Blender uses throwaway settings, so yours aren't touched. Then read the results with
 scripts/latency_report.py latency-results/<name>. Needs server/.venv.
 """
 
 import argparse
+import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -42,6 +47,34 @@ def wait_for(test, timeout: float, what: str) -> None:
             return
         time.sleep(0.1)
     raise SystemExit(f"Timed out waiting for {what}")
+
+
+def http_url(ws_url: str) -> str:
+    """The REST side of a ws:// or wss:// server URL."""
+    return "http" + ws_url.removeprefix("ws") if ws_url.startswith("ws") else ws_url
+
+
+def post(url: str, body: dict, token: str | None = None) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read())
+
+
+def sign_up(server: str, room: str) -> str:
+    """Register a throwaway user, make the room as them (#18), and return their token."""
+    credentials = {"username": f"latency-{secrets.token_hex(4)}", "password": secrets.token_urlsafe(16)}
+    post(f"{server}/api/auth/register", credentials)
+    token = post(f"{server}/api/auth/login", credentials)["token"]
+    try:
+        post(f"{server}/api/rooms", {"room_id": room}, token)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            raise SystemExit(f"Room {room!r} already exists on {server}; pass another --room.") from None
+        raise
+    return token
 
 
 def server_is_up() -> bool:
@@ -91,6 +124,7 @@ def start_blender(client: str, out: Path, scratch: Path, sync: Path, args, x: in
         "LATENCY_SYNC_DIR": str(sync),
         "LATENCY_ROOM": args.room,
         "LATENCY_URL": args.url or "ws://localhost:8000",
+        "LATENCY_TOKEN": args.token,
     }
     command = [BLENDER, "--factory-startup", "--window-geometry", str(x), "0", "800", "600"]
     if not args.manual:
@@ -122,25 +156,28 @@ def main() -> int:
     sync.mkdir()
 
     server = None if args.url else start_server(out, scratch, args.host)
+    url = args.url or "ws://localhost:8000"
     clients = ["A"] if args.scenario == "rtt" else ["B", "A"]
     blenders = {}
     load = None
     try:
+        args.token = sign_up(http_url(url), args.room)
         for index, client in enumerate(clients):
             blenders[client] = start_blender(client, out, scratch, sync, args, 820 * (client == "B"))
         wait_for(lambda: (sync / "ready").exists(), 60, "the Blenders to get ready")
 
         if args.scenario == "load":
-            url = args.url or "ws://localhost:8000"
             load = subprocess.Popen(
                 [str(SERVER_PYTHON), str(REPO / "scripts" / "latency_load.py"), args.room,
-                 "--url", url, "--clients", str(args.clients)],
+                 "--url", url, "--clients", str(args.clients), "--token", args.token],
                 stdout=(out / "load.log").open("w"),
                 stderr=subprocess.STDOUT,
             )
             time.sleep(LOAD_SETTLE_S)
         if args.scenario == "rtt":
-            input("Start latency_probe.py on the other machine, then press Enter: ")
+            print(f"On the other machine: latency_probe.py {args.room} --url ws://<this-ip>:8000 "
+                  f"--token {args.token}")
+            input("Start latency_probe.py there, then press Enter: ")
         (sync / "start").write_text("x")
         if args.manual:
             input("Drag the cube in A (for about 10 s), then press Enter: ")

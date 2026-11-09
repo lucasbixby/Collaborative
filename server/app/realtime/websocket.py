@@ -1,8 +1,15 @@
 """WebSocket relay endpoint: one connection per client, one room per project (#11).
 
-Minimal version for the prototype (10/24): no accounts (TODO #16 / #17), no ordering
-beyond arrival order (#8 / #9). A room's connections exist only while at least one client
-is in it, but its operations are kept in the log (#19).
+A room's connections exist only while at least one client is in it, but its operations are
+kept in the log (#19).
+
+Access (#16, #17): the token comes in the `Authorization: Bearer` header, never the URL, which
+uvicorn's access log records. The socket is accepted first, then closed before any catch-up with
+4401 if the token is missing or bad, or 4403 if the room doesn't exist or the user isn't in it,
+so a client sees the code and the reason rather than a failed handshake (docs/protocol.md). The
+role is kept on the connection (`websocket.state.access`): a viewer gets the catch-up and every
+live op, but its own `ops` get an `error` and go nowhere. `member_changed` applies a role
+change or removal made over REST to open connections straight away.
 
 On connect, catch-up (#20): under the room's lock, the socket joins the room, gets the room's
 current state as ordinary `ops` messages (app.sync.state), then `{"type": "synced", "seq": N}`.
@@ -15,8 +22,9 @@ client leaving mid-query (which cancels this handler) can't leave a connection h
 snapshots run as background tasks the app waits for at shutdown (app.realtime.tasks, D-088).
 
 Flow for each incoming message:
-  1. `parse_message` (app.sync.operations) checks size and schema, then `origins`
-     (app.sync.validation) checks this connection may send as that origin (#10).
+  1. A viewer's message is refused unread. Otherwise `parse_message` (app.sync.operations)
+     checks size and schema, then `origins` (app.sync.validation) checks this connection's
+     user may send as that origin (#10, #17).
   2. Valid: append it to the operation log (app.sync.log), so nothing is ever broadcast that
      isn't in the log.
   3. Saved: broadcast `serialize_message(parsed)` to every other client in the room, never
@@ -31,24 +39,49 @@ import asyncio
 import json
 import logging
 import re
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
+from app.auth.membership import ROOM_ID_PATTERN, role_in
+from app.auth.permissions import Role, can_join, can_send_operations
+from app.auth.tokens import InvalidToken, bearer_token, verify_token
+from app.db.models import OriginOwner
 from app.sync import log as operation_log
 from app.sync import state as room_state
 from app.sync import timing
 from app.sync.conflicts import RoomState
 from app.sync.operations import parse_message, serialize_message
-from app.sync.validation import OriginRegistry
 
 from .connections import ConnectionManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 manager = ConnectionManager()
-origins = OriginRegistry()
 
-ROOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_ROOM_ID = re.compile(ROOM_ID_PATTERN)
+
+# Close codes in the 4000s are the application's own (RFC 6455 7.4.2), named after HTTP's. The
+# client should sign in, or be invited, before trying again: reconnecting can't help.
+CLOSE_UNAUTHENTICATED = 4401
+CLOSE_FORBIDDEN = 4403
+
+VIEWER_ERROR = "viewers can't edit"
+SAVE_ERROR = "the server couldn't save this message; not relayed"
+
+
+@dataclass
+class Access:
+    """Who a connection is signed in as, and their role in its room right now."""
+
+    user_id: int
+    username: str
+    role: Role
+    removed: bool = False  # set by member_changed, which has closed the socket
 
 
 async def _send_error(websocket: WebSocket, reason: str) -> None:
@@ -76,6 +109,64 @@ async def _append(app, room_id: str, message) -> list[int]:
         return await operation_log.append(session, room_id, message)
 
 
+async def _look_up_access(app, room_id: str, token: str) -> tuple[bool, Access | None]:
+    """(whether the token is good, the user's access to the room if they have any)."""
+    async with app.state.sessions() as session:
+        try:
+            user = await verify_token(session, token)
+        except InvalidToken:
+            return False, None
+        role = await role_in(session, room_id, user.id)
+    return True, Access(user.id, user.username, role) if can_join(role) else None
+
+
+async def _authorize(websocket: WebSocket, room_id: str) -> Access | None:
+    """The connection's access to the room, or None after closing it with 4401 or 4403."""
+    token = bearer_token(websocket.headers.get("authorization"))
+    signed_in, access = False, None
+    if token is not None:
+        app = websocket.app
+        signed_in, access = await app.state.tasks.shielded(_look_up_access(app, room_id, token))
+    if access is not None:
+        return access
+    if token is None:
+        code, reason = CLOSE_UNAUTHENTICATED, "sign in first"
+    elif not signed_in:
+        code, reason = CLOSE_UNAUTHENTICATED, "invalid or expired token; sign in again"
+    else:
+        # One reason for "no such room" and "not a member", so it doesn't say which rooms exist.
+        code, reason = CLOSE_FORBIDDEN, f"no access to room {room_id}"
+    logger.info("refused room=%s code=%d reason=%s", room_id, code, reason)
+    await websocket.close(code=code, reason=reason)
+    return None
+
+
+async def _claim_origin(app, origin: str, user_id: int) -> int:
+    """The origin's owner in the database, making it `user_id`'s if it has none yet."""
+    owner_of = select(OriginOwner.user_id).where(OriginOwner.origin == origin)
+    async with app.state.sessions() as session:
+        owner = await session.scalar(owner_of)
+        if owner is not None:
+            return owner
+        session.add(OriginOwner(origin=origin, user_id=user_id, claimed_at=datetime.now(UTC)))
+        try:
+            await session.commit()
+        except IntegrityError:  # another connection claimed it at the same moment
+            await session.rollback()
+            return await session.scalar(owner_of)
+        return user_id
+
+
+async def _check_origin(websocket: WebSocket, room_id: str, access: Access, origin: str) -> None:
+    """Raise ValueError unless this connection's user may send as `origin` (#10, #17)."""
+    app = websocket.app
+    registry = app.state.origins
+    if registry.owner(origin) is None:
+        owner = await app.state.tasks.shielded(_claim_origin(app, origin, access.user_id))
+        registry.set_owner(origin, owner)
+    registry.check(room_id, id(websocket), origin, access.user_id)
+
+
 async def _join_and_catch_up(websocket: WebSocket, room_id: str) -> int:
     """Join the room, then send its state and `synced`, all under the room's lock. A client
     that leaves part way through just ends this early: the read is shielded, and the lock and
@@ -92,31 +183,67 @@ async def _join_and_catch_up(websocket: WebSocket, room_id: str) -> int:
     return count
 
 
+async def member_changed(room_id: str, user_id: int, role: Role | None) -> None:
+    """Apply a membership change to the user's open connections to the room: a new role takes
+    effect from their next message, and a removal (`role` None) closes them with 4403."""
+    for websocket in manager.sockets(room_id):
+        access = getattr(websocket.state, "access", None)
+        if access is None or access.user_id != user_id:
+            continue
+        if role is not None:
+            access.role = role
+            logger.info("role change room=%s user=%s role=%s", room_id, access.username, role)
+            continue
+        access.removed = True
+        manager.leave(room_id, websocket)  # no more broadcasts, even before its handler ends
+        logger.info("removed room=%s user=%s", room_id, access.username)
+        with suppress(Exception):  # already closing or gone: either way it's out
+            await websocket.close(code=CLOSE_FORBIDDEN, reason=f"removed from room {room_id}")
+
+
 @router.websocket("/ws/rooms/{room_id}")
 async def room_socket(websocket: WebSocket, room_id: str) -> None:
-    if not ROOM_ID_PATTERN.match(room_id):
+    if not _ROOM_ID.match(room_id):
         await websocket.close(code=1008)
         return
 
     await websocket.accept()
     with websocket.app.state.tasks.handler(websocket):
-        await _relay(websocket, room_id)
+        access = await _authorize(websocket, room_id)
+        if access is not None:
+            websocket.state.access = access
+            await _relay(websocket, room_id, access)
 
 
-async def _relay(websocket: WebSocket, room_id: str) -> None:
+async def _relay(websocket: WebSocket, room_id: str, access: Access) -> None:
     app = websocket.app
     try:
         count = await _join_and_catch_up(websocket, room_id)
-        logger.info("connect room=%s clients=%d", room_id, count)
+        logger.info(
+            "connect room=%s user=%s role=%s clients=%d",
+            room_id,
+            access.username,
+            access.role,
+            count,
+        )
         while True:
             raw = await websocket.receive_text()
             received_at = timing.now()
+            if not can_send_operations(access.role):
+                # Not parsed, logged or relayed: a viewer only watches.
+                logger.info("reject room=%s user=%s reason=viewer", room_id, access.username)
+                await _send_error(websocket, VIEWER_ERROR)
+                continue
             try:
                 message = parse_message(raw)
-                origins.check(room_id, id(websocket), message.origin)
+                await _check_origin(websocket, room_id, access, message.origin)
             except ValueError as exc:
                 logger.info("reject room=%s reason=%s", room_id, exc)
                 await _send_error(websocket, str(exc))
+                continue
+            except Exception:
+                logger.exception("origin lookup failed room=%s", room_id)
+                await _send_error(websocket, SAVE_ERROR)
                 continue
             timing.mark("server_received", message, received_at)
             timing.mark("server_parsed", message)
@@ -126,9 +253,7 @@ async def _relay(websocket: WebSocket, room_id: str) -> None:
                 except Exception:
                     logger.exception("append failed room=%s", room_id)
                     # Generic on purpose: database details stay in the server's log.
-                    await _send_error(
-                        websocket, "the server couldn't save this message; not relayed"
-                    )
+                    await _send_error(websocket, SAVE_ERROR)
                     continue
                 timing.mark("server_persisted", message)
                 await manager.broadcast(room_id, serialize_message(message), exclude=websocket)
@@ -136,7 +261,12 @@ async def _relay(websocket: WebSocket, room_id: str) -> None:
                 app.state.snapshots.appended(room_id, len(seqs))
     except WebSocketDisconnect:
         pass
+    except RuntimeError:
+        # Starlette's "send after close": the socket was closed under this handler when the
+        # user was removed. Anything else is a real error.
+        if not access.removed:
+            raise
     finally:
-        origins.release(room_id, id(websocket))
+        app.state.origins.release(room_id, id(websocket))
         count = manager.leave(room_id, websocket)
         logger.info("disconnect room=%s clients=%d", room_id, count)

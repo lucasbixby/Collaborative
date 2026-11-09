@@ -17,14 +17,19 @@ class COLLAB_OT_join_room(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        return client.status() == "disconnected"
+        # "refused" too: after signing in, or being invited, Join is how to try again.
+        return client.status() in ("disconnected", "refused")
 
     def execute(self, context):
         prefs = context.preferences.addons[__package__].preferences
         room_id = context.window_manager.room_id
         try:
             client.connect(
-                prefs.server_url, room_id, apply.apply_message, detect.send_unknown_creates
+                prefs.server_url,
+                room_id,
+                apply.apply_message,
+                detect.send_unknown_creates,
+                token=prefs.auth_token,
             )
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
