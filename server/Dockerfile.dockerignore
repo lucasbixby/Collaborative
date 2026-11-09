@@ -1,0 +1,11 @@
+# The image's build context is the repo root (#22). Everything is left out except what the
+# Dockerfile copies, so a stray .blend, a venv or node_modules never goes to the builder.
+*
+!server/pyproject.toml
+!server/app
+!server/scripts
+!web
+web/node_modules
+web/dist
+**/__pycache__
+**/*.pyc

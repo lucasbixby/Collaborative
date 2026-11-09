@@ -571,6 +571,7 @@ signing out forgets the token on that machine.
 | `POST /api/rooms` `{"room_id"}` | anyone signed in | `201`, the creator is owner; `409` if the id is taken |
 | `GET /api/rooms` | anyone signed in | `[{"room_id", "role", "created_at"}]`: my rooms |
 | `GET /api/rooms/{id}` | members | the room, my role, and `members: [{"username", "role", "joined_at"}]` |
+| `GET /api/rooms/{id}/presence` | members | `{"room_id", "users": [{"username", "role", "connections"}]}`: who has a socket open in the room now, once per user, with how many (#22). This server process's view; the web UI polls it |
 | `POST /api/rooms/{id}/invites` `{"role": "editor" \| "viewer", "expires_in_hours": 24}` | owners | `201` `{"code", "room_id", "role", "expires_at"}`. 1–720 hours |
 | `DELETE /api/rooms/{id}/invites/{code}` | owners | `204`; the code stops working |
 | `POST /api/rooms/join/{code}` | anyone signed in | `{"room_id", "role"}`. `404` unknown code, `410` expired or revoked. A member keeps the higher of their role and the invite's |

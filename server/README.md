@@ -54,6 +54,17 @@ In Docker: `docker compose exec server python scripts/admin.py ...`.
 **Rooms from before #18.** A room's log is kept by its id, so the first person to create a room
 called `demo` gets whatever `demo` had before accounts existed.
 
+## The web UI (#22)
+
+With `COLLAB_WEB_DIR` set to a built `web/dist`, the server also serves the web UI at `/`: a
+file that exists there is served as is, and any other path that isn't under `/api/` or `/ws/`
+gets `index.html`, so the app's own routes (`/rooms/demo`, `/join/<code>`) work on a reload.
+The Docker image builds the UI and sets it to `/srv/web`. Unset, as in local dev, the server is
+API-only and the UI runs on Vite's dev server (`cd web && npm run dev`), which proxies to :8000.
+
+`GET /api/rooms/{id}/presence` lists who has a socket open in a room, for the UI's "Connected
+now"; it reads the relay's in-memory connections, so it's this process's view.
+
 ## Room state and snapshots (#20)
 
 A client that connects is sent the room's current state first, so Blenders don't need to share a

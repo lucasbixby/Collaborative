@@ -1,16 +1,30 @@
+# Built from the repo root (docker-compose.yml sets the context), so the web UI can be built
+# here too; server/Dockerfile.dockerignore lists the few paths that go in.
+
+# Stage 1: the web UI (#22). Only its output is kept; Node isn't in the final image.
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: the server, which also serves the UI at / (COLLAB_WEB_DIR).
 FROM python:3.12-slim
 
 WORKDIR /srv
 
 # Dependencies get their own layer, built from pyproject.toml alone, so editing code doesn't
 # reinstall them. `app` isn't installed as a package: it runs from /srv, like in local dev.
-COPY pyproject.toml ./
+COPY server/pyproject.toml ./
 RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > /tmp/requirements.txt \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
-COPY app ./app
-COPY scripts ./scripts
+COPY server/app ./app
+COPY server/scripts ./scripts
+COPY --from=web /web/dist ./web
+ENV COLLAB_WEB_DIR=/srv/web
 
 # A fresh named volume copies the ownership of the folder it's mounted on, so this has to happen
 # before VOLUME. A volume first created by an older, root-run image stays root-owned: `down -v`.
