@@ -13,7 +13,9 @@ conflicts resolve, and what is accepted from clients.
 | `state.py` | A room's current state: `load_state` (latest snapshot + the log after it), `SnapshotScheduler` (counts appends in memory and writes a snapshot in a background task every `COLLAB_SNAPSHOT_EVERY` ops) and `catch_up_messages` (the state as size-limited `ops` messages). Used by the socket's catch-up and by REST. **Done (#20).** |
 
 Tests live in `server/tests/sync/`. The convergence test (simulated concurrent
-clients end in identical state) is a success criterion in the proposal.
+clients end in identical state) is a success criterion in the proposal: **met (#21)**, see
+`tests/sync/test_convergence.py`, with one known exception, same-name renames (below the rules
+in `docs/protocol.md`, "Known divergences").
 
 The operation format is also documented in [`docs/protocol.md`](../../../docs/protocol.md),
 since the Blender add-on has to speak it too.
