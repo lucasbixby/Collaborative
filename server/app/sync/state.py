@@ -1,24 +1,30 @@
 """A room's current state: the latest snapshot plus the log after it (#20).
 
 `load_state` is the one way to read it, used by the socket's catch-up and by REST.
-`maybe_snapshot` runs after each append and writes a new snapshot once the log has grown
-`settings.snapshot_every` operations past the last one (D-082). Log rows are never deleted:
-the history is a success criterion, so compaction is a follow-up.
+`SnapshotScheduler` decides when to write a snapshot (every `settings.snapshot_every`
+operations, D-082) by counting in memory, and writes it in a background task, so the relay
+never touches the database for it per message (D-088). Log rows are never deleted: the history
+is a success criterion, so compaction is a follow-up.
 
 `catch_up_messages` turns a state into `ops` messages that obey the same rules as any
 client's: one `create` per message, one origin per message, each at most the size limit.
 """
 
 import json
+import logging
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.db.models import Operation, Snapshot
 from app.sync import log
 from app.sync.conflicts import RoomState
+
+logger = logging.getLogger(__name__)
 
 
 def encode(message: dict) -> str:
@@ -47,17 +53,18 @@ async def load_state(session: AsyncSession, room_id: str) -> tuple[RoomState, in
     return state, last_seq
 
 
-async def maybe_snapshot(session: AsyncSession, room_id: str) -> Snapshot | None:
-    """Write a snapshot if the log has grown `snapshot_every` ops past the latest one."""
+async def ops_since_snapshot(session: AsyncSession, room_id: str) -> int:
+    """How many of the room's log rows come after its latest snapshot."""
     snapshot = await latest_snapshot(session, room_id)
-    after = snapshot.seq if snapshot else 0
-    pending = await session.scalar(
+    return await session.scalar(
         select(func.count())
         .select_from(Operation)
-        .where(Operation.room_id == room_id, Operation.seq > after)
+        .where(Operation.room_id == room_id, Operation.seq > (snapshot.seq if snapshot else 0))
     )
-    if pending < settings.snapshot_every:
-        return None
+
+
+async def write_snapshot(session: AsyncSession, room_id: str) -> Snapshot:
+    """Fold the room's current state and save it as a new snapshot."""
     state, last_seq = await load_state(session, room_id)
     new = Snapshot(
         room_id=room_id, seq=last_seq, state=state.to_json(), created_at=datetime.now(UTC)
@@ -65,6 +72,53 @@ async def maybe_snapshot(session: AsyncSession, room_id: str) -> Snapshot | None
     session.add(new)
     await session.commit()
     return new
+
+
+class SnapshotScheduler:
+    """Counts each room's appends since its last snapshot, in memory, and starts a snapshot
+    task once the count reaches `settings.snapshot_every` (D-088).
+
+    A room's count is seeded from the database once, by `seed`, which catch-up calls before
+    the room's first append in this process. A room that was never seeded counts from 0, which
+    only delays its next snapshot. At most one snapshot per room runs at a time. A snapshot that
+    fails, or is cancelled at shutdown, is just skipped: it's a cache over the log (D-082).
+    """
+
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        spawn: Callable[[Coroutine[Any, Any, Any]], Any],
+    ) -> None:
+        self._sessions = sessions
+        self._spawn = spawn
+        self._pending: dict[str, int] = {}
+        self._running: set[str] = set()
+
+    def seeded(self, room_id: str) -> bool:
+        return room_id in self._pending
+
+    def seed(self, room_id: str, pending: int) -> None:
+        """Start counting from `pending`, the ops already logged since the latest snapshot."""
+        self._pending.setdefault(room_id, pending)
+
+    def appended(self, room_id: str, count: int) -> None:
+        """Note `count` new ops for the room, starting a snapshot if one is due."""
+        pending = self._pending.get(room_id, 0) + count
+        if pending >= settings.snapshot_every and room_id not in self._running:
+            pending = 0  # ops appended while it's written are counted towards the next one
+            self._running.add(room_id)
+            self._spawn(self._take(room_id))
+        self._pending[room_id] = pending
+
+    async def _take(self, room_id: str) -> None:
+        try:
+            async with self._sessions() as session:
+                snapshot = await write_snapshot(session, room_id)
+            logger.info("snapshot room=%s seq=%d", room_id, snapshot.seq)
+        except Exception:
+            logger.exception("snapshot failed room=%s", room_id)
+        finally:
+            self._running.discard(room_id)
 
 
 def catch_up_messages(state: RoomState, max_bytes: int | None = None) -> list[str]:

@@ -123,6 +123,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-085 | Merge on join: on a Join's first `synced`, offer every local mesh the catch-up didn't mention | 11/05 | Active |
 | D-086 | Catch-up batches carry one origin each and stay under 64 KiB | 11/05 | Active |
 | D-087 | `client.synced()` sits beside `status()`; inbox entries carry their socket's generation | 11/05 | Active |
+| D-088 | Handlers never await the database directly: shielded tasks the app tracks, snapshots counted in memory and written in the background, shutdown ends handlers and that work before disposing the engine | 11/09 | Active |
 
 ## Log
 
@@ -1010,4 +1011,50 @@ same state.
   so joining a room of N objects is O(N²) in scene reads. Fine at the sizes tested; worth batching
   if rooms get large.
 - #16 / #17: no auth on the socket or REST yet (TODO comments in place).
+
+### 2026-11-09 · Fix: shutdown hang from cut-off queries (#20)
+
+`tests/realtime/test_websocket.py` hung in teardown on this branch in about 1 test in 3 on
+Lucas's machine (0 on main), and CI's server job ran for 20+ minutes before it was cancelled.
+**Cause:** `_snapshot_if_due` opened a database session after every broadcast, inside the room
+lock. A client that left right after a broadcast (or a test that ended, or shutdown) cancelled
+the handler mid-query. The aiosqlite connection was left half-closed ("Exception terminating
+connection" in the log, with a `CancelledError`), and `engine.dispose()` at shutdown then waited
+for it forever. On this Mac the same error was logged in most runs but it never turned into a
+hang, which is why my runs for #20 passed.
+
+| Decision | Why |
+|---|---|
+| D-088: A connection handler never awaits the database itself. Queries (the append, catch-up's read) run through `AppTasks.shielded`, a task the app tracks and the handler awaits through `asyncio.shield`. Snapshots are no longer checked per message: `SnapshotScheduler` counts each room's appends in memory (seeded once from the database during the room's first catch-up in this process) and, when one is due, spawns one tracked task per room, outside the lock. The lifespan calls `AppTasks.shutdown()` before `engine.dispose()`: it sends close 1012 to every client, gives each handler 0.5 s to exit and then cancels it, then waits up to 5 s for the database work and cancels whatever overruns. | A handler can be cancelled at any await, by things outside our control, so the fix has to make that harmless rather than avoid it. A shielded query finishes and closes its session even if its caller is gone, and the shutdown order means nothing is using the engine when it's disposed. Counting in memory removes the per-message round trip, about 0.5 ms (D-082). A snapshot is only a cache, so skipping one is fine: a room that was never seeded counts from 0, a failed or cancelled snapshot is logged and skipped, and ops that arrive while one is being written count towards the next. Rejected: wrapping each query in `asyncio.shield` inline (the same idea, but nothing would track the orphaned task for shutdown), and catching `CancelledError` to close the session by hand (it's cancelled again by anyio's cancel scope, which is how it broke in the first place). |
+
+**Details:**
+- New: `server/app/realtime/tasks.py` (`AppTasks`). Changed: `SnapshotScheduler`,
+  `ops_since_snapshot` and `write_snapshot` in `app/sync/state.py`, which replace
+  `maybe_snapshot`; the handler in `app/realtime/websocket.py`; the lifespan in `app/main.py`,
+  which now sets up the locks, tasks and scheduler (the `hasattr` lock hack is gone).
+- **The regression guard:** the `client` fixture now records SQLAlchemy pool errors and fails
+  the test if there are any, checked after shutdown. With the old code, 24 of the 33 relay tests
+  fail it, and with the old per-message query put back into the new code, about 30 of 52 do.
+  With the fix, none do.
+- New tests: clients leaving right after a broadcast with a snapshot due every message (20
+  rounds); a client leaving during a 301-message catch-up (10 times), after which the room still
+  works; a snapshot at the threshold through the relay; real uvicorn with two clients connected
+  and a snapshot due, stopped with SIGTERM (under 3 s, clean log); `AppTasks` unit tests
+  (shielding, shutdown order, overrun); and scheduler tests (threshold, seeding, one per room,
+  failure, cancellation mid-query).
+- Hang-proofing: `pytest-timeout` in the server's dev deps, with `timeout = 30` per test, and
+  `timeout-minutes: 10` on every CI job.
+- Runs: `tests/realtime` 10 times (52 passed each) and the full server suite 3 times (622
+  passed each), all under a watchdog, with no hang and no "terminating connection" in any output.
+  Add-on: 144 passed. `docker_smoke.sh` passes. A separate Compose project with
+  `COLLAB_SNAPSHOT_EVERY=1` and two connected clients that had just relayed: `docker compose stop`
+  took 0.4 s, exit 0, and the clients got close code 1012. Uvicorn also sends 1012 to open
+  connections on shutdown, before the lifespan's, so in Docker I can't tell which of the two
+  closed them. Either way, `AppTasks.shutdown` waits for the snapshot tasks before the engine goes.
+
+**Open / follow-up:**
+- The hang never reproduced on this Mac, only the error that causes it. The pool-error check is
+  what shows the fix, here and on CI.
+- Snapshot tasks for one room don't queue: ops that arrive while one is running count towards
+  the next, so with `COLLAB_SNAPSHOT_EVERY=1` some seqs are skipped. At 500 that's immaterial.
 

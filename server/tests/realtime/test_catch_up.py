@@ -1,11 +1,24 @@
 """Tests for catch-up on connect (#20) and the REST endpoints over the same state."""
 
+import asyncio
 import json
+import os
+import signal
+import socket
+import subprocess
+import sys
 import threading
 import time
+import urllib.request
 import uuid
+from pathlib import Path
+
+import pytest
+import websockets
+from sqlalchemy import select
 
 from app.config import settings
+from app.db.models import Snapshot
 from app.sync import log as operation_log
 from app.sync.conflicts import RoomState
 from app.sync.operations import parse_message
@@ -13,6 +26,7 @@ from tests.catchup import joined, read_catch_up
 from tests.sync.test_conflicts import A, B, X, Y, create, delete, move
 
 Z = "33333333-3333-4333-8333-333333333333"
+SERVER_DIR = Path(__file__).resolve().parents[2]
 
 
 def _room() -> str:
@@ -246,3 +260,133 @@ def test_rest_refuses_a_bad_room_id_and_bad_paging(client):
     assert client.get("/api/rooms/ok/operations", params={"since": -1}).status_code == 422
     assert client.get("/api/rooms/ok/operations", params={"limit": 0}).status_code == 422
     assert client.get("/api/rooms/ok/operations", params={"limit": 1001}).status_code == 422
+
+
+# -- Leaving at awkward moments, and shutdown (#20's hang) ----------------------------------
+# Every test here also relies on the `client` fixture's check that no database connection was
+# left half-closed: that's what made engine.dispose() hang at shutdown.
+
+
+def _snapshot_count(client, room) -> int:
+    async def _count():
+        async with client.app.state.sessions() as session:
+            return len(
+                list(await session.scalars(select(Snapshot).where(Snapshot.room_id == room)))
+            )
+
+    return client.portal.call(_count)
+
+
+def test_clients_leaving_right_after_a_broadcast_leave_nothing_open(client, monkeypatch):
+    monkeypatch.setattr(settings, "snapshot_every", 1)  # a snapshot after every message
+    room = _room()
+    for n in range(20):
+        with joined(client, room) as a, joined(client, room) as b:
+            a.send_text(_ops(move(float(n), lamport=n + 1, origin=str(uuid.UUID(int=n + 1)))))
+            b.receive_text()
+        # Both leave the moment the broadcast arrives, while the server is still mid-message.
+
+    _wait_until(lambda: _snapshot_count(client, room) >= 1)
+
+
+def test_a_client_leaving_during_catch_up_releases_the_room(client):
+    room = _room()
+    objects = [f"{n:08x}-0000-4000-8000-000000000000" for n in range(300)]
+
+    async def _fill():
+        async with client.app.state.sessions() as session:
+            for obj in objects:
+                await operation_log.append(session, room, parse_message(_ops(create(obj=obj))))
+
+    client.portal.call(_fill)
+    for _ in range(10):
+        with client.websocket_connect(f"/ws/rooms/{room}") as ws:
+            ws.receive_text()  # leave after the first of 301 messages
+
+    # The lock and the room were released: the next clients catch up and relay normally.
+    with joined(client, room) as a, joined(client, room) as b:
+        assert len(a.catch_up) == len(objects)
+        a.send_text(_ops(move(1.0, obj=objects[0], lamport=5)))
+        assert json.loads(b.receive_text())["ops"] == [move(1.0, obj=objects[0], lamport=5)]
+
+
+def test_a_snapshot_is_written_at_the_threshold_by_the_relay(client, monkeypatch):
+    monkeypatch.setattr(settings, "snapshot_every", 3)
+    room = _room()
+    with joined(client, room) as a, joined(client, room) as b:
+        for n in range(2):
+            a.send_text(_ops(move(float(n), lamport=n + 1)))
+            b.receive_text()
+        assert _snapshot_count(client, room) == 0
+        a.send_text(_ops(move(2.0, lamport=3)))
+        b.receive_text()
+
+    _wait_until(lambda: _snapshot_count(client, room) == 1)
+
+
+def _wait_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition not met in time")
+
+
+def test_uvicorn_stops_promptly_with_a_client_connected(tmp_path):
+    # Shutdown as Docker does it: SIGTERM to a real server with a client still in a room.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "COLLAB_DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path}/shutdown.db",
+        "COLLAB_SNAPSHOT_EVERY": "1",
+    }
+    server = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port)],
+        cwd=SERVER_DIR,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        _wait_until(lambda: _healthy(port), timeout=15)
+
+        async def _client():
+            uri = f"ws://127.0.0.1:{port}/ws/rooms/shutdown"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                for ws in (a, b):
+                    while json.loads(await ws.recv())["type"] != "synced":
+                        pass
+                await a.send(_ops(create(lamport=1)))
+                await b.recv()  # relayed, and a snapshot is due
+                started = time.monotonic()
+                server.send_signal(signal.SIGTERM)
+                with pytest.raises(websockets.exceptions.ConnectionClosed):
+                    await asyncio.wait_for(b.recv(), 5)
+                return time.monotonic() - started
+
+        elapsed = asyncio.run(_client())
+        server.wait(timeout=10)
+    finally:
+        if server.poll() is None:
+            server.kill()
+        output = server.communicate()[0]
+
+    assert elapsed < 3, output
+    # Uvicorn re-raises the SIGTERM after a clean shutdown, so -15 is a normal exit here.
+    assert server.returncode in (0, -signal.SIGTERM), output
+    assert "Application shutdown complete" in output, output
+    assert "Exception terminating connection" not in output
+    assert "Traceback" not in output, output
+
+
+def _healthy(port) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1):
+            return True
+    except OSError:
+        return False

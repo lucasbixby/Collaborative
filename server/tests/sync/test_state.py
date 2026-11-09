@@ -1,5 +1,6 @@
 """Tests for a room's state on disk (#20): load_state, snapshots, restart, catch-up messages."""
 
+import asyncio
 import json
 
 import pytest
@@ -25,17 +26,58 @@ def _message(*ops):
 
 
 @pytest.fixture
-async def session(database_url):
+async def sessions(database_url):
     engine = create_engine(database_url)
     await create_tables(engine)
-    async with create_session_factory(engine)() as session:
-        yield session
+    yield create_session_factory(engine)
     await engine.dispose()
 
 
-async def _append(session, *ops):
-    await log.append(session, ROOM, _message(*ops))
-    return await room_state.maybe_snapshot(session, ROOM)
+@pytest.fixture
+async def session(sessions):
+    async with sessions() as session:
+        yield session
+
+
+class _Spawner:
+    """Stands in for AppTasks.spawn: runs each snapshot task and lets the test wait for it."""
+
+    def __init__(self):
+        self.tasks = []
+
+    def __call__(self, coro):
+        task = asyncio.get_running_loop().create_task(coro)
+        self.tasks.append(task)
+        return task
+
+    async def wait(self):
+        await asyncio.gather(*self.tasks)
+        self.tasks.clear()
+
+
+@pytest.fixture
+def spawner():
+    return _Spawner()
+
+
+@pytest.fixture
+def scheduler(sessions, spawner):
+    return room_state.SnapshotScheduler(sessions, spawner)
+
+
+@pytest.fixture
+def append(session, scheduler, spawner):
+    """Append as the relay does: log the ops, tell the scheduler, and wait for any snapshot.
+    Returns how many snapshot tasks that append started."""
+
+    async def _append(*ops):
+        seqs = await log.append(session, ROOM, _message(*ops))
+        scheduler.appended(ROOM, len(seqs))
+        started = len(spawner.tasks)
+        await spawner.wait()
+        return started
+
+    return _append
 
 
 async def _snapshots(session):
@@ -68,33 +110,116 @@ async def test_load_state_pages_past_the_since_limit(session, monkeypatch):
     assert state.to_ops() == [move(5.0, lamport=5)]
 
 
-async def test_no_snapshot_below_the_threshold(session, monkeypatch):
+async def test_no_snapshot_below_the_threshold(session, append, monkeypatch):
     monkeypatch.setattr(settings, "snapshot_every", 3)
 
-    assert await _append(session, move(1.0, lamport=1), move(2.0, lamport=2)) is None
+    assert await append(move(1.0, lamport=1), move(2.0, lamport=2)) == 0
     assert await _snapshots(session) == []
 
 
 async def test_a_snapshot_is_written_at_the_threshold_and_counts_from_the_last(
-    session, monkeypatch
+    session, append, monkeypatch
 ):
     monkeypatch.setattr(settings, "snapshot_every", 3)
 
-    await _append(session, create(lamport=1), move(1.0, lamport=2))
-    first = await _append(session, move(2.0, lamport=3))  # 3 ops: due
-    assert await _append(session, move(3.0, lamport=4)) is None  # 1 past the snapshot
-    await _append(session, move(4.0, lamport=5))
-    second = await _append(session, move(5.0, lamport=6))  # 3 past the snapshot: due
+    await append(create(lamport=1), move(1.0, lamport=2))
+    assert await append(move(2.0, lamport=3)) == 1  # 3 ops: due
+    assert await append(move(3.0, lamport=4)) == 0  # 1 past the snapshot
+    await append(move(4.0, lamport=5))
+    assert await append(move(5.0, lamport=6)) == 1  # 3 past the snapshot: due
 
-    assert [s.seq for s in await _snapshots(session)] == [first.seq, second.seq]
+    first, second = await _snapshots(session)
     assert RoomState.from_json(first.state).to_ops() == [create(lamport=1), move(2.0, lamport=3)]
     assert RoomState.from_json(second.state).to_ops() == [create(lamport=1), move(5.0, lamport=6)]
 
 
-async def test_state_is_the_latest_snapshot_plus_the_log_after_it(session, monkeypatch):
+async def test_the_count_is_seeded_from_the_log_after_the_latest_snapshot(
+    session, sessions, spawner, monkeypatch
+):
+    monkeypatch.setattr(settings, "snapshot_every", 3)
+    await log.append(session, ROOM, _message(move(1.0, lamport=1), move(2.0, lamport=2)))
+
+    restarted = room_state.SnapshotScheduler(sessions, spawner)
+    restarted.seed(ROOM, await room_state.ops_since_snapshot(session, ROOM))
+    await log.append(session, ROOM, _message(move(3.0, lamport=3)))
+    restarted.appended(ROOM, 1)
+    await spawner.wait()
+
+    assert len(await _snapshots(session)) == 1
+    assert await room_state.ops_since_snapshot(session, ROOM) == 0
+
+
+async def test_seed_does_not_overwrite_a_live_count(scheduler, spawner, monkeypatch):
+    monkeypatch.setattr(settings, "snapshot_every", 3)
+    scheduler.appended(ROOM, 2)
+    scheduler.seed(ROOM, 0)  # a later connection's catch-up
+
+    scheduler.appended(ROOM, 1)
+
+    assert len(spawner.tasks) == 1
+    await spawner.wait()
+
+
+async def test_one_snapshot_at_a_time_per_room(scheduler, spawner, monkeypatch):
+    monkeypatch.setattr(settings, "snapshot_every", 1)
+
+    scheduler.appended(ROOM, 1)
+    scheduler.appended(ROOM, 1)  # the first hasn't run yet
+    scheduler.appended("other", 1)
+
+    assert len(spawner.tasks) == 2
+    await spawner.wait()
+    scheduler.appended(ROOM, 1)  # finished, so the next one may start
+    assert len(spawner.tasks) == 1
+    await spawner.wait()
+
+
+async def test_a_failed_snapshot_is_logged_and_skipped(scheduler, spawner, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "snapshot_every", 1)
+
+    async def broken(session, room_id):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(room_state, "write_snapshot", broken)
+    scheduler.appended(ROOM, 1)
+    await spawner.wait()
+
+    assert "snapshot failed room=room" in caplog.text
+    scheduler.appended(ROOM, 1)  # not stuck "running"
+    assert len(spawner.tasks) == 1
+    await spawner.wait()
+
+
+async def test_a_cancelled_snapshot_leaves_no_connection_open(
+    sessions, scheduler, spawner, monkeypatch, caplog
+):
+    # Cancelled mid-query, with its session open: the cleanup must still close the connection,
+    # or disposing the engine afterwards waits for it forever.
+    monkeypatch.setattr(settings, "snapshot_every", 1)
+    in_query = asyncio.Event()
+    real_since = log.since
+
+    async def slow_since(session, room_id, after_seq=0, limit=log.MAX_SINCE_LIMIT):
+        rows = await real_since(session, room_id, after_seq, limit)
+        in_query.set()
+        await asyncio.sleep(30)
+        return rows
+
+    monkeypatch.setattr(log, "since", slow_since)
+    scheduler.appended(ROOM, 1)
+    await asyncio.wait_for(in_query.wait(), 5)
+    spawner.tasks[0].cancel()
+    await asyncio.gather(*spawner.tasks, return_exceptions=True)
+
+    async with sessions() as session:  # the pool still hands out a working connection
+        assert await room_state.ops_since_snapshot(session, ROOM) == 0
+    assert "Exception terminating connection" not in caplog.text
+
+
+async def test_state_is_the_latest_snapshot_plus_the_log_after_it(session, append, monkeypatch):
     monkeypatch.setattr(settings, "snapshot_every", 2)
-    await _append(session, create(lamport=1), move(1.0, lamport=2))  # snapshot
-    await _append(session, delete(obj=Y, lamport=3, origin=B))  # tail
+    await append(create(lamport=1), move(1.0, lamport=2))  # snapshot
+    await append(delete(obj=Y, lamport=3, origin=B))  # tail
 
     # Prove the snapshot is used: corrupt the log rows it covers.
     snapshot = (await _snapshots(session))[-1]
@@ -113,9 +238,9 @@ async def test_state_is_the_latest_snapshot_plus_the_log_after_it(session, monke
     assert seq > snapshot.seq
 
 
-async def test_snapshots_are_per_room(session, monkeypatch):
+async def test_snapshots_are_per_room(session, append, monkeypatch):
     monkeypatch.setattr(settings, "snapshot_every", 1)
-    await _append(session, create())
+    await append(create())
 
     other, _ = await room_state.load_state(session, "other")
 
@@ -123,12 +248,13 @@ async def test_snapshots_are_per_room(session, monkeypatch):
     assert {s.room_id for s in await _snapshots(session)} == {ROOM}
 
 
-async def test_the_log_is_never_trimmed(session, monkeypatch):
+async def test_the_log_is_never_trimmed(session, append, monkeypatch):
     monkeypatch.setattr(settings, "snapshot_every", 1)
     for lamport in range(1, 4):
-        await _append(session, move(float(lamport), lamport=lamport))
+        await append(move(float(lamport), lamport=lamport))
 
     assert len(await log.since(session, ROOM)) == 3
+    assert len(await _snapshots(session)) == 3
 
 
 def test_state_and_snapshots_survive_a_restart(database_url, monkeypatch):
