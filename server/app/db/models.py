@@ -2,7 +2,16 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -35,6 +44,45 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(32), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class Room(Base):
+    """A room (#18). Its id is the human-readable name clients join by, the same pattern the
+    socket's URL takes. Who may do what is in RoomMember; `created_by` is only a record."""
+
+    __tablename__ = "rooms"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class RoomMember(Base):
+    """One user's role in one room: "owner", "editor" or "viewer" (app.auth.permissions)."""
+
+    __tablename__ = "room_members"
+
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True, index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    joined_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class Invite(Base):
+    """An invite code for a room (#18). Only the code's SHA-256 is stored: the code is shown
+    once, to the owner who made it, so the database alone can't be used to join. A code can be
+    used by any number of people until it expires or is revoked."""
+
+    __tablename__ = "invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Operation(Base):

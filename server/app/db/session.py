@@ -21,10 +21,12 @@ BUSY_TIMEOUT_MS = 5000
 
 def _configure_sqlite(connection, _record) -> None:
     """Let several clients write at once (D-066). The timeout comes first: switching to WAL
-    needs a lock itself, so without it that switch could fail with "database is locked"."""
+    needs a lock itself, so without it that switch could fail with "database is locked".
+    SQLite also ignores foreign keys unless asked, per connection (#18)."""
     cursor = connection.cursor()
     cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 
 

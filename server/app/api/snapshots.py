@@ -8,17 +8,14 @@ the same functions the socket uses. Both need a signed-in user (#16).
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Path, Query, Request
+from fastapi import APIRouter, Query, Request
 
 from app.auth.dependencies import CurrentUser
+from app.auth.membership import RoomId
 from app.sync import log
 from app.sync.state import load_state
 
 router = APIRouter()
-
-# The socket's own room pattern (app.realtime.websocket), so both accept the same rooms.
-RoomId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
-
 
 @router.get("/{room_id}/snapshot")
 async def get_snapshot(request: Request, room_id: RoomId, user: CurrentUser) -> dict:

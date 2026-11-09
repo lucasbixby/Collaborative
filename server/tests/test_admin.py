@@ -59,3 +59,26 @@ def test_errors_are_one_line_and_exit_1(admin):
     assert short.returncode == 1 and "at least 8" in short.stderr
     bad_name = admin("create-user", "no spaces", check=False)
     assert bad_name.returncode == 1 and "3-32" in bad_name.stderr
+
+
+def test_create_room_and_add_member_give_those_roles(admin, database_url):
+    for name in ("alice", "bob"):
+        admin("create-user", name)
+    assert "owned by 'alice'" in admin("create-room", "studio", "--owner", "alice").stdout
+    assert "'bob' is now viewer" in admin("add-member", "studio", "bob", "--role", "viewer").stdout
+    bob = admin("token", "bob").stdout.strip()
+
+    with TestClient(create_app(database_url)) as test_client:
+        rooms = test_client.get("/api/rooms", headers=bearer(bob)).json()
+    assert [(room["room_id"], room["role"]) for room in rooms] == [("studio", "viewer")]
+
+
+def test_room_errors(admin):
+    admin("create-user", "alice")
+    admin("create-room", "studio", "--owner", "alice")
+    taken = admin("create-room", "studio", "--owner", "alice", check=False)
+    assert taken.stderr == "error: room 'studio' already exists\n"
+    no_room = admin("add-member", "nowhere", "alice", check=False)
+    assert no_room.stderr == "error: no room 'nowhere'\n"
+    bad_id = admin("create-room", "has space", "--owner", "alice", check=False)
+    assert bad_id.returncode == 1 and "1-64" in bad_id.stderr
