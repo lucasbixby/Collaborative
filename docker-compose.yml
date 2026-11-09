@@ -1,15 +1,18 @@
 # Success criterion: the server runs from a single command.
-#   docker compose up --build
+#   docker compose up --build        # the web UI and the API at http://localhost:8000
 #
 # Settings can come from the shell or an optional .env next to this file; see server/.env.example.
 services:
   server:
-    build: ./server
+    # The repo root, so the image can build the web UI as well (#22).
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      # The default only earns a warning at startup for now; enforcing it is #16.
+      # Signs login tokens (#16). The default earns a loud warning at startup; set your own.
       COLLAB_SECRET_KEY: ${COLLAB_SECRET_KEY:-dev-only-change-me}
       COLLAB_DATABASE_URL: ${COLLAB_DATABASE_URL:-sqlite+aiosqlite:////srv/data/collaborative.db}
       COLLAB_ASSET_DIR: ${COLLAB_ASSET_DIR:-/srv/data/assets}
@@ -20,14 +23,6 @@ services:
       COLLAB_TIMING: ${COLLAB_TIMING:-}
     volumes:
       - server-data:/srv/data   # database + asset store survive restarts
-
-  # Web UI (#22): not built yet.
-  # web:
-  #   build: ./web
-  #   ports:
-  #     - "5173:5173"
-  #   depends_on:
-  #     - server
 
 volumes:
   server-data:

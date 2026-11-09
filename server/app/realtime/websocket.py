@@ -201,6 +201,21 @@ async def member_changed(room_id: str, user_id: int, role: Role | None) -> None:
             await websocket.close(code=CLOSE_FORBIDDEN, reason=f"removed from room {room_id}")
 
 
+def presence(room_id: str) -> list[dict]:
+    """Who has an open socket in the room right now (#22): one entry per user, with their
+    current role and how many connections they have (two Blenders count twice)."""
+    users: dict[int, dict] = {}
+    for websocket in manager.sockets(room_id):
+        access = getattr(websocket.state, "access", None)
+        if access is None or access.removed:
+            continue
+        entry = users.setdefault(
+            access.user_id, {"username": access.username, "role": access.role, "connections": 0}
+        )
+        entry["connections"] += 1
+    return sorted(users.values(), key=lambda entry: entry["username"])
+
+
 @router.websocket("/ws/rooms/{room_id}")
 async def room_socket(websocket: WebSocket, room_id: str) -> None:
     if not _ROOM_ID.match(room_id):

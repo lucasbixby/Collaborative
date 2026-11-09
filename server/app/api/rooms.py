@@ -1,4 +1,5 @@
-"""REST: create rooms, invite people, list a user's rooms, manage members (#18).
+"""REST: create rooms, invite people, list a user's rooms, manage members (#18), and see who's
+connected (#22).
 
 A room must be created before anyone can join it, and its creator is its owner. Room ids stay
 human-readable ("demo"), since that's what people type into the Blender panel. Only owners
@@ -28,7 +29,7 @@ from app.auth.dependencies import CurrentUser, Session
 from app.auth.membership import ROOM_ID_PATTERN, Member, Membership
 from app.auth.permissions import Role, can_manage, higher
 from app.db.models import Invite, Room, RoomMember, User
-from app.realtime.websocket import member_changed
+from app.realtime.websocket import member_changed, presence
 
 router = APIRouter()
 
@@ -65,6 +66,17 @@ class InviteOut(BaseModel):
     room_id: str
     role: Role
     expires_at: datetime
+
+
+class PresentUser(BaseModel):
+    username: str
+    role: Role
+    connections: int
+
+
+class Presence(BaseModel):
+    room_id: str
+    users: list[PresentUser]
 
 
 class Joined(BaseModel):
@@ -119,6 +131,13 @@ async def get_room(member: Member, session: Session) -> RoomDetail:
         created_at=member.room.created_at,
         members=[MemberOut(username=u, role=r, joined_at=j) for u, r, j in rows],
     )
+
+
+@router.get("/{room_id}/presence")
+async def get_presence(member: Member) -> Presence:
+    """Members with an open socket in the room right now (#22). In memory, like the rooms
+    themselves, so it's this process's view: the web UI polls it."""
+    return Presence(room_id=member.room.id, users=presence(member.room.id))
 
 
 @router.post("/{room_id}/invites", status_code=status.HTTP_201_CREATED)

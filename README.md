@@ -21,7 +21,7 @@ server/                FastAPI server (runs in Docker)
     storage/           Asset store interface + local-disk implementation
   tests/
     sync/              Sync engine tests
-web/                   React + TypeScript UI (Vite): sign-in, rooms, connection status
+web/                   React + TypeScript UI (Vite): sign-in, rooms, invites, who's connected
 docker-compose.yml     One command to run the server
 ```
 
@@ -71,41 +71,28 @@ non-root user. It uses its own Compose project and volume, so your data is safe,
 
 ### First run
 
-Accounts and rooms (#16–#18): you sign in, a room has to exist before anyone joins it, and its
-owner invites everyone else.
+Open **http://localhost:8000** after `docker compose up --build`. Accounts and rooms (#16–#18):
+you sign in, a room has to exist before anyone joins it, and its owner invites everyone else.
 
-1. **Register.** Each person, once:
-   ```bash
-   curl -X POST localhost:8000/api/auth/register -H 'Content-Type: application/json' \
-     -d '{"username": "alice", "password": "at least 8 chars"}'
-   ```
-   Or, on the server: `docker compose exec server python scripts/admin.py create-user alice`.
-2. **Sign in from Blender.** Edit > Preferences > Add-ons > Collaborative: set the Server URL,
-   then **Sign in** with that username and password. It keeps a token (valid for a week), not
-   the password, and shows "Signed in as alice".
-3. **Create a room**, as its owner. With a token from `POST /api/auth/login` (or
-   `scripts/admin.py token alice`):
-   ```bash
-   TOKEN=...   # alice's
-   curl -X POST localhost:8000/api/rooms -H "Authorization: Bearer $TOKEN" \
-     -H 'Content-Type: application/json' -d '{"room_id": "demo"}'
-   ```
-   Or `docker compose exec server python scripts/admin.py create-room demo --owner alice`.
-4. **Invite someone.** The owner makes a code (`editor` or `viewer`, valid 24 hours by default):
-   ```bash
-   curl -X POST localhost:8000/api/rooms/demo/invites -H "Authorization: Bearer $TOKEN" \
-     -H 'Content-Type: application/json' -d '{"role": "editor"}'      # -> {"code": "..."}
-   ```
-   and the other person, signed in as themselves, uses it:
-   ```bash
-   curl -X POST localhost:8000/api/rooms/join/<code> -H "Authorization: Bearer $THEIR_TOKEN"
-   ```
-5. **Join** the room from the Collaborative panel in each Blender. Without signing in the panel
-   says "Sign in first", and without access "No access to demo"; signing in or being invited,
-   then Join, tries again.
+1. **Register.** On the sign-in page, **Create an account** (3–32 letters, digits, `.`, `_` or
+   `-`; a password of at least 8 characters).
+2. **Create a room** under My rooms. You're its owner. Room ids are what people type into the
+   Blender panel, so keep them short (`demo`).
+3. **Invite someone.** On the room's page, under Invite someone, pick editor or viewer and how
+   long the link lasts, then **Create invite link** and **Copy link**. The other person opens it,
+   signs in or creates an account, and lands in the room. The code is shown only once; Revoke
+   stops it working.
+4. **Sign in from Blender.** The room page's "Join from Blender" box has the room id and the
+   Server URL, each with a copy button. In Blender: Edit > Preferences > Add-ons > Collaborative,
+   paste the Server URL, and **Sign in** with the same account as in the browser. The add-on
+   keeps a token (valid for a week), not the password.
+5. **Join** the room from the Collaborative panel. The room page's "Connected now" shows who's
+   in, refreshed every few seconds. Without signing in, the panel says "Sign in first", and
+   without access "No access to demo"; signing in or being invited, then Join, tries again.
 
-The rest of the API (my rooms, members, roles, removing someone) is in
-[docs/protocol.md](docs/protocol.md#rest), and `http://localhost:8000/docs` lists every route.
+Owners also change roles and remove members on the room page. Without the UI,
+`docker compose exec server python scripts/admin.py --help` does the same from a terminal, and
+the REST API is in [docs/protocol.md](docs/protocol.md#rest) (`/docs` lists every route).
 
 ### Other parts
 
@@ -118,12 +105,14 @@ uvicorn app.main:app --reload
 pytest
 ```
 
-**Web UI:**
+**Web UI (dev):** with the server running on :8000,
 ```bash
 cd web
 npm install
-npm run dev                      # http://localhost:5173
+npm run dev                      # http://localhost:5173; /api and /ws are proxied to :8000
+npm test && npm run lint
 ```
+In Docker the image builds it and the server serves it at `/`, so this is only for working on it.
 
 **Blender add-on:** see [addon/README.md](addon/README.md).
 

@@ -1,9 +1,14 @@
 :root {
   --text: #1f2328;
-  --muted: #656d76;
-  --bg: #ffffff;
+  --muted: #59636e;
+  --bg: #f6f8fa;
+  --surface: #ffffff;
   --border: #d0d7de;
   --accent: #2f6fde;
+  --accent-text: #ffffff;
+  --danger: #c62828;
+  --ok: #1a7f37;
+  --focus: #2f6fde;
 
   font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
@@ -14,11 +19,20 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --text: #e6edf3;
-    --muted: #8d96a0;
+    --muted: #9198a1;
     --bg: #0d1117;
+    --surface: #161b22;
     --border: #30363d;
     --accent: #4c8dff;
+    --accent-text: #0d1117;
+    --danger: #ff7b72;
+    --ok: #3fb950;
+    --focus: #79a8ff;
   }
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
@@ -26,7 +40,247 @@ body {
 }
 
 #root {
-  max-width: 720px;
+  max-width: 760px;
   margin: 0 auto;
-  padding: 32px 16px;
+  padding: 16px;
+}
+
+h1,
+h2 {
+  margin: 0 0 12px;
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 1.6rem;
+}
+
+h2 {
+  font-size: 1.15rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0 16px;
+}
+
+.site-header > a {
+  font-weight: 700;
+  font-size: 1.1rem;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.who {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.card.narrow {
+  max-width: 420px;
+  margin-inline: auto;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+.inline-form {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  align-items: end;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+
+input,
+select {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  min-width: 0;
+}
+
+input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--surface);
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  font-weight: inherit;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--danger);
+}
+
+p.error {
+  margin: 4px 0;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.list li:first-child {
+  border-top: none;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.badge {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+.badge.owner {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.badge.editor {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+code.revoked {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.copy-fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  align-items: center;
+  margin: 0;
+}
+
+.copy-fields dt {
+  font-weight: 600;
+}
+
+.copy-fields dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 480px) {
+  .copy-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 12px 14px;
+  }
 }

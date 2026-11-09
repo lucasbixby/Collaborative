@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Write a room snapshot once its log has grown this many operations past the last one (#20).
     snapshot_every: int = 500
 
+    # The built web UI to serve at / (#22): web/dist, or /srv/web in the image. Unset, the
+    # server is API-only, and in dev the UI runs on Vite's server instead.
+    web_dir: Path | None = None
+
     # Origins allowed to call the REST API (the React dev server by default).
     cors_origins: list[str] = ["http://localhost:5173"]
 

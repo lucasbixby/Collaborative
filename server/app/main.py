@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from app.realtime import websocket
 from app.realtime.tasks import AppTasks
 from app.sync.state import SnapshotScheduler
 from app.sync.validation import OriginRegistry
+from app.web import add_web_routes
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +49,7 @@ _DEFAULT_KEY_WARNING = """
 ************************************************************************************"""
 
 
-def create_app(database_url: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, web_dir: Path | None = None) -> FastAPI:
     """Build the app. The database is only opened at startup, in `lifespan`, so importing this
     module touches no files, and each app instance has its own engine (D-065)."""
     _configure_logging()
@@ -92,6 +94,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # Last: its catch-all must not shadow anything above (#22).
+    if (web_dir or settings.web_dir) is not None:
+        add_web_routes(app, web_dir or settings.web_dir)
 
     return app
 
