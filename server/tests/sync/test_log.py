@@ -16,6 +16,7 @@ from app.db.session import BUSY_TIMEOUT_MS, create_engine, create_session_factor
 from app.main import create_app
 from app.sync import log
 from app.sync.operations import parse_message
+from tests.catchup import joined
 
 SERVER_DIR = Path(__file__).resolve().parents[2]
 PROTOCOL_MD = SERVER_DIR.parent / "docs" / "protocol.md"
@@ -175,7 +176,7 @@ async def test_since_clamps_limit(session, monkeypatch, limit, expected):
 
 
 def _ws(client: TestClient):
-    return client.websocket_connect(f"/ws/rooms/{ROOM}")
+    return joined(client, ROOM)
 
 
 def test_history_survives_a_restart(database_url, read_log):

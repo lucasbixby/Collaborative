@@ -40,9 +40,17 @@ def _messages() -> list[dict]:
     return [{"v": 1, "type": "ops", "ops": [create]}, {"v": 1, "type": "ops", "ops": moves}]
 
 
+async def _caught_up(ws) -> None:
+    """Read the room's catch-up, which every connection starts with (#20), up to `synced`."""
+    while json.loads(await asyncio.wait_for(ws.recv(), TIMEOUT)).get("type") != "synced":
+        pass
+
+
 async def relay(room: str) -> int:
     uri = f"{BASE_URL}/{room}"
     async with websockets.connect(uri) as sender, websockets.connect(uri) as receiver:
+        await _caught_up(sender)
+        await _caught_up(receiver)
         messages = _messages()
         for message in messages:
             await sender.send(json.dumps(message))

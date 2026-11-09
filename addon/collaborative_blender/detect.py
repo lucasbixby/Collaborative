@@ -10,6 +10,12 @@ across undo (D-018 to D-021).
 Changes caused by applying a remote operation go through `suppressed()` (see apply.py, #6)
 to avoid echoing them back out as if they were local edits. Each emitted op's Lamport
 timestamp comes from the shared clock in `ordering.py` (#8), not a counter of its own.
+
+Joining (#20): `start` takes a silent snapshot, so nothing already in the scene is sent then.
+Once the room's catch-up has been applied, `send_unknown_creates` sends a `create` for each
+local mesh the room doesn't know (merge on join, D-085). Edits made while not in a room are
+still never sent on their own: an object the room already knows keeps whatever this client
+had, until someone changes it again.
 """
 
 import json
@@ -110,11 +116,17 @@ def _collection_name(obj: bpy.types.Object) -> str:
 
 def _make_create_op(obj: bpy.types.Object, collab_id: str, values: dict[str, object]) -> dict:
     """Everything another client needs to rebuild `obj`. Reads the base mesh, not the
-    evaluated one, since modifiers aren't synced."""
+    evaluated one, since modifiers aren't synced.
+
+    A `create` counts as a write of each property it carries (D-081), so it's recorded in
+    `versions` like a `set`, and an older `set` for this object loses to it."""
+    lamport = ordering.clock.tick()
+    for prop in _TRACKED_PROPERTIES:
+        ordering.versions.record((collab_id, prop), (lamport, _origin))
     return {
         "kind": "create",
         "object": collab_id,
-        "lamport": ordering.clock.tick(),
+        "lamport": lamport,
         "origin": _origin,
         "name": values["name"],
         "object_type": "MESH",
@@ -145,6 +157,29 @@ def _send_create(obj: bpy.types.Object, collab_id: str, values: dict[str, object
         log(f"too large to sync (#27): {obj.name}, {size} bytes")
         return
     _send_timed(message)
+
+
+def send_unknown_creates(known: set[str]) -> None:
+    """Merge on join (#20, D-085): send a `create` for each local object the room's catch-up
+    didn't mention, so joining with a scene adds it to the room rather than hiding it.
+
+    Called once per Join, after the catch-up has been applied, with every object ID it
+    mentioned (created, set or deleted). Uses the normal create path: non-mesh objects stay
+    `not synced yet` and oversized ones `too large`. They're already in the cache, so the next
+    flush won't send them again.
+    """
+    if not _active:
+        return
+    ids.ensure_ids()
+    sent = 0
+    for obj in bpy.context.scene.objects:
+        collab_id = ids.get_id(obj)
+        if collab_id in known or collab_id in ordering.tombstones:
+            continue
+        _send_create(obj, collab_id, _read_object(obj))
+        sent += 1
+    if sent:
+        log(f"joined: offered {sent} local object(s) the room didn't have")
 
 
 def _send_timed(message: dict) -> None:

@@ -1,12 +1,12 @@
 """Apply remote `ops` messages to the local scene, without echoing them back out (#6).
 
-The receiving half of #5: `apply_message` is what #12's WebSocket client will call, on
-Blender's main thread, for each message the relay forwards. No network yet.
+The receiving half of #5: `apply_message` is what #12's WebSocket client calls, on Blender's
+main thread, for each message the relay forwards.
 
-Prototype limitation: `collab_id`s are assigned per Blender session (#4) from random
-UUIDs, so an operation from one client only matches another's objects if both already
-have the *same* IDs on the *same* objects. Until joining a room syncs state (#20), both
-clients open the same saved `.blend` file first — see addon/README.md.
+Joining a room syncs state (#20): the server first sends the room's current state as ordinary
+`ops` messages, which arrive here like any other, so a client with an empty scene ends up with
+every object. Two Blenders no longer need to open the same saved `.blend` file. A local object
+the room doesn't know is offered to it afterwards (`detect.send_unknown_creates`).
 
 Last-writer-wins (#8 / #9): an incoming `set` is only applied if it's newer than the
 last value this client sent or applied for that key, via the shared clock and `Versions`
@@ -88,6 +88,10 @@ def _apply_create(op: dict, objects: dict[str, bpy.types.Object]) -> None:
             _SETTERS[prop](obj, op["transform"][prop])
         obj[ids.COLLAB_ID] = collab_id
         _target_collection(op["collection"]).objects.link(obj)
+        if isinstance(op.get("lamport"), int):
+            # A create counts as a write of what it carries (D-081): an older `set` loses.
+            for prop in _SETTERS:
+                ordering.versions.record((collab_id, prop), (op["lamport"], op.get("origin")))
     except Exception as exc:  # noqa: BLE001 - a malformed create must not crash the batch
         log("apply: skip, create raised", collab_id, exc)
         if obj is not None:

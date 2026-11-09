@@ -1,6 +1,8 @@
 """FastAPI entry point: wires the REST routers and the WebSocket relay together."""
 
+import asyncio
 import logging
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -11,6 +13,8 @@ from app.api import auth, rooms, snapshots
 from app.config import DEFAULT_SECRET_KEY, settings
 from app.db.session import create_engine, create_session_factory, create_tables
 from app.realtime import websocket
+from app.realtime.tasks import AppTasks
+from app.sync.state import SnapshotScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +51,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
         engine = create_engine(database_url or settings.database_url)
         await create_tables(engine)
         app.state.sessions = create_session_factory(engine)
+        app.state.tasks = AppTasks()
+        app.state.room_locks = defaultdict(asyncio.Lock)
+        app.state.snapshots = SnapshotScheduler(app.state.sessions, app.state.tasks.spawn)
         yield
+        # Handlers and their database work first: disposing the engine while a query is still
+        # running waits for it forever (D-088).
+        await app.state.tasks.shutdown()
         await engine.dispose()
 
     app = FastAPI(title="Collaborative", version="0.1.0", lifespan=lifespan)

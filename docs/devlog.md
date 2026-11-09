@@ -28,8 +28,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 |---|---|
 | Phase | Feature freeze (due 11/16); Prototype done 10/23 |
 | In progress | — |
-| Next up | #20 Snapshots and catch-up |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency |
+| Next up | #16 Accounts and auth tokens |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency, #20 Snapshots and catch-up |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -80,13 +80,13 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-042 | `ruff` pinned to 0.17.1 in both `server/pyproject.toml` and `addon/requirements-dev.txt` | 10/20 | Active |
 | D-043 | `create_app()` configures logging for the `app` logger namespace at startup | 10/20 | Active |
 | D-044 | `apply_message` runs its whole batch inside one `detect.suppressed()` block, with objects looked up once per batch | 10/21 | Active |
-| D-045 | Until #20, both clients must open the same saved `.blend` so `collab_id`s already match | 10/21 | Active |
+| D-045 | Until #20, both clients must open the same saved `.blend` so `collab_id`s already match | 10/21 | Superseded by D-084 / D-085 |
 | D-046 | The client Lamport clock (`ordering.LamportClock`) is one shared counter that never resets, not even across `detect.stop()` / `start()` | 10/21 | Active |
 | D-047 | Last-writer-wins via `ordering.Versions`: an incoming `set` is applied only if it's newer than the last value this client sent or applied for that key | 10/21 | Active |
 | D-048 | `websocket-client` 1.9.2 vendored at `addon/collaborative_blender/vendor/websocket/`, excluded from ruff and pyright | 10/21 | Active |
 | D-049 | `client.py` is two daemon threads (reader, writer) that never touch `bpy`; `drain()` is a plain function run by a `bpy.app.timers` tick every ~20 ms | 10/21 | Active |
 | D-050 | Reconnect backoff 0.5 s, 1, 2, 4, then every 8 s; the outbox persists across reconnects, capped at 1000 messages (drop the oldest) | 10/21 | Active |
-| D-051 | Operations another client sent while this one was disconnected are missed until catch-up (#20) exists | 10/21 | Active |
+| D-051 | Operations another client sent while this one was disconnected are missed until catch-up (#20) exists | 10/21 | Superseded by D-084 |
 | D-052 | `room_id` lives on `WindowManager`, not `Scene`, so it isn't saved into the `.blend` or treated as a scene edit | 10/22 | Active |
 | D-053 | Join always runs `detect.stop()` before `detect.start(client.send)`, never just `start()` | 10/22 | Active |
 | D-054 | A ~0.25 s main-thread timer compares `client.status()` and `tag_redraw()`s `VIEW_3D` areas only when it changes | 10/22 | Active |
@@ -116,6 +116,14 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-078 | End to end runs from the depsgraph handler to the setter on the receiver | 11/03 | Active |
 | D-079 | Across machines: round trip on one clock, with RTT/2 reported alongside a corrected estimate | 11/03 | Active |
 | D-080 | Compose passes `COLLAB_TIMING` through, empty (off) by default; latency runs use their own Compose project | 11/05 | Active |
+| D-081 | The server folds a room's log with the clients' rules; a `create` also counts as a write of what it carries | 11/05 | Active |
+| D-082 | A snapshot every 500 ops (`COLLAB_SNAPSHOT_EVERY`), as a cache over a log that's never trimmed | 11/05 | Active |
+| D-083 | One `asyncio.Lock` per room around catch-up and around save → forward | 11/05 | Active |
+| D-084 | The server pushes catch-up on every connection, as plain `ops` then `synced`; no request message | 11/05 | Active |
+| D-085 | Merge on join: on a Join's first `synced`, offer every local mesh the catch-up didn't mention | 11/05 | Active |
+| D-086 | Catch-up batches carry one origin each and stay under 64 KiB | 11/05 | Active |
+| D-087 | `client.synced()` sits beside `status()`; inbox entries carry their socket's generation | 11/05 | Active |
+| D-088 | Handlers never await the database directly: shielded tasks the app tracks, snapshots counted in memory and written in the background, shutdown ends handlers and that work before disposing the engine | 11/09 | Active |
 
 ## Log
 
@@ -932,3 +940,121 @@ criterion is met with about 50 ms to spare rather than 100, and the slowest samp
   `threading.Event` (about 11 ms at p50) is still the cheapest gain; `INTERVAL` and `DRAIN_INTERVAL`
   are unchanged.
 - The idle detect wait above 50 ms is still unexplained.
+
+### 2026-11-05 · Snapshots and catch-up after reconnect (#20)
+
+Every new connection now gets the room's current state before any live traffic: the server
+folds its log (latest snapshot + the rows after it) with the clients' own rules, and sends the
+result as ordinary `ops` messages followed by `{"type": "synced", "seq": N}`. A Blender with an
+empty scene gets every object, one that was away gets what it missed (deletes included), and
+on a Join's first `synced` the add-on offers the room any local mesh it doesn't know. Two
+Blenders no longer need to open the same `.blend`, so D-045 and D-051 are superseded. Snapshots
+are written every 500 ops, and `GET /api/rooms/{id}/snapshot` and `/operations?since=` read the
+same state.
+
+| Decision | Why |
+|---|---|
+| D-081: `RoomState` (`server/app/sync/conflicts.py`) folds ops with protocol rules 1–3: per (object, property) the highest (lamport, origin) `set` wins; the first `create` per ID wins; a `delete` tombstones the ID, drops its create and sets, and beats every later op. Two additions: **a `create` counts as a write of `location`, `rotation`, `scale` and `name` at its own op ID**, so an older `set` loses, and of several deletes for one ID the oldest is kept. The add-on follows the first one too: `detect` and `apply` record `Versions` for a create. | The same rules as the clients, so the state the server sends is what clients that saw every op already have. Without the create rule, merge on join breaks: a client that edits an object during catch-up sends `set`s the room drops (rule 9), then offers the object with a newer `create`. A later joiner would apply the stale `set` over the `create`. Keeping the oldest delete makes the state independent of arrival order, which 200 random sequences check. Live, every remote `set` is already newer than the `create` its sender saw, so nothing else changes. A `set` for an object the log never created is kept, because logs from the shared-`.blend` era have them. |
+| D-082: A snapshot is written after an append once the room's log has grown `COLLAB_SNAPSHOT_EVERY` ops (500) past its latest one: latest snapshot + fold of the rows since. `snapshots` holds (room_id, seq, state JSON, created_at). Log rows are never deleted. A failed snapshot is only logged. | A snapshot is a cache: it bounds how much of the log a join has to fold. The operation history is a success criterion, so nothing is trimmed (compaction is a follow-up). Measured here: a snapshot write costs 6–9 ms for a 200-object room, once every 500 ops, and the "not due yet" check costs about 0.5 ms per message, all after the broadcast. The op is already saved and relayed, so a failed snapshot costs nothing but a longer fold next time. Rejected: a snapshot on a timer, which would need a background task per room. |
+| D-083: One `asyncio.Lock` per room, held around "join → read state → send catch-up → `synced`" and around "append → broadcast → snapshot check". The locks live on `app.state`, not in the module. | Without it, a live op can land between reading the state and joining (lost) or reach a client before its catch-up (out of order). Both cases were reproduced by mutating the code, and the race test fails both times. Duplicates are harmless; loss isn't. An `asyncio.Lock` belongs to the event loop it's first used on, and every test builds its own app. Cost: appends in one room are serialized, which they already were by SQLite's single writer. A slow client's catch-up holds up the room, as a slow client already holds up broadcast. Rejected: buffering live ops per connection during catch-up, which is more code for the same guarantee. |
+| D-084: The server pushes catch-up on every connection, whether a first join, a late join or a reconnect, as ordinary `ops` messages plus `synced`. There's no `catch_up` request and no `snapshot` message type, and the protocol's TODO rows for them are gone. | One path for every case, so a client never has to know it's behind or ask. Ordinary `ops` go through `apply_message` unchanged (suppressed, LWW, tombstones), so the add-on needed no second apply path. Cost: a reconnect resends the whole state rather than only what's new. For a room of 200 objects that's about 200 messages and 107 KiB, which is fine now. A `join` carrying the last seen `seq` could send a delta later. |
+| D-085: Merge on join. On the first `synced` of a Join, `detect.send_unknown_creates` sends a `create` for each local mesh whose ID the catch-up didn't mention (in a create, set or delete), skipping tombstoned IDs. A reconnect within the Join sends nothing extra. | Joining with a scene adds it to the room instead of silently hiding it from everyone else. "Mentioned in any op" counts objects from a shared `.blend` as known, so that workflow still works. Tombstoned IDs are skipped because Cmd+Z can bring back a deleted object with its old ID before the next flush retires it. On a reconnect, edits made meanwhile are already in the outbox. Not covered: edits made while not in a room, to objects the room knows, are never sent (documented in `addon/README.md`). |
+| D-086: Catch-up `set`s and `delete`s are batched one origin per message, each at most `max_operation_bytes`; each `create` goes alone. | Protocol rule 4 says one origin per message, and the server's own `OpsMessage` rejects mixed ones, so a mixed batch would be a message the protocol forbids. Every catch-up message parses with `parse_message` in the tests. |
+| D-087: `client.status()` keeps its four values; `client.synced()` is new, and the panel shows "Catching up with {room}…" until it's true. The reader tags each inbox entry with its socket's generation. | Changing what "connected" means would break the latency driver and a dozen tests. The generation tag stops a `synced` left in the inbox by a socket that died from marking the next socket as caught up. |
+
+**Details:**
+- Server: `app/sync/conflicts.py` (`RoomState`), `app/sync/state.py` (`load_state`,
+  `maybe_snapshot`, `catch_up_messages`), the `Snapshot` model, `snapshot_every` in config (and
+  compose / `.env.example`), catch-up and the lock in `app/realtime/websocket.py`, and REST in
+  `app/api/snapshots.py`. Tests: `tests/sync/test_conflicts.py`, `tests/sync/test_state.py`,
+  `tests/realtime/test_catch_up.py`, and `tests/catchup.py`, a connect helper that reads the
+  catch-up first, which the existing relay tests now use.
+- Add-on: `client.py` (`synced`, catch-up IDs, `on_synced`, generation tags), `detect.py`
+  (`send_unknown_creates`, create records `Versions`), `apply.py` (create records `Versions`),
+  `operators.py` (Join passes the hook), `panel.py` ("Catching up…"). Tests:
+  `tests/test_catch_up.py` (a fake relay plays the server) and two create-as-write tests in
+  `tests/test_create_delete.py`. One existing test changed: `test_apply_then_flush_sends_nothing`
+  used a remote `set` at lamport 1, older than the cube's own `create`, which now loses.
+- `scripts/smoke_client.py` (Docker smoke test, also in CI) reads the catch-up before checking
+  the relay. `docker_smoke.sh` passes.
+- **End to end, outside the test suites:** a throwaway script ran the real server and four
+  headless Blender add-on processes, with `COLLAB_SNAPSHOT_EVERY=5`. All 11 checks passed: B
+  joined empty and matched A; B left, A moved, deleted and created, B rejoined and matched, with
+  its stale object removed; after a server restart, A reconnected by itself and a new client C
+  matched; D joined with its own cube, kept it, and A and C got it; after another restart, D
+  reconnected without resending anything; snapshots were written. No errors in any log. GUI
+  Blender wasn't used: that's the manual check.
+- Mutation-checked: no lock (join after reading, or join first) fails the race test; on_synced
+  on every reconnect, no catch-up IDs, no generation check, no tombstone skip, and no
+  create-as-write on either side each fail a test.
+- The race test first hung in teardown about 1 run in 6: the client left while the server was
+  still committing a backlog of thousands of appends, overlapping the app's shutdown. It now
+  waits for the backlog (and is throttled).
+- Latency, scenario 1 rerun with the lock: p50 56.8, p95 88.9, p99 100.8, max 105.3 ms (n=214),
+  against 58.0 / 89.1 / 94.3 / 98.7 before; persist is 1.0 ms at p50, as before. A first attempt
+  stalled after 58 nudges: both windows stopped drawing at the same moment, 18.6 s in, and A
+  stopped producing edits while its other timers ran. A rerun was clean. It looks local to A's
+  window rather than the server, but it isn't explained.
+
+**Open / follow-up:**
+- Log compaction: the log grows without limit. Snapshots make a join cheap regardless, but disk
+  use keeps growing.
+- A D-070 failed write still isn't repaired by catch-up: the sender has its edit locally and its
+  `Versions` say it's newer, so the room's older value is skipped and that client stays different
+  until someone edits the object again.
+- Catch-up resends the full state on every reconnect (D-084). A `join` with the last seen `seq`
+  could send only the tail.
+- Merge on join with the default scene gives both clients two overlapping cubes (`Cube` and
+  `Cube.001`, named the other way round on each side). That's by design, but it may surprise
+  people in the demo.
+- `apply_message` re-reads the whole scene per message, and catch-up sends each `create` alone,
+  so joining a room of N objects is O(N²) in scene reads. Fine at the sizes tested; worth batching
+  if rooms get large.
+- #16 / #17: no auth on the socket or REST yet (TODO comments in place).
+
+### 2026-11-09 · Fix: shutdown hang from cut-off queries (#20)
+
+`tests/realtime/test_websocket.py` hung in teardown on this branch in about 1 test in 3 on
+Lucas's machine (0 on main), and CI's server job ran for 20+ minutes before it was cancelled.
+**Cause:** `_snapshot_if_due` opened a database session after every broadcast, inside the room
+lock. A client that left right after a broadcast (or a test that ended, or shutdown) cancelled
+the handler mid-query. The aiosqlite connection was left half-closed ("Exception terminating
+connection" in the log, with a `CancelledError`), and `engine.dispose()` at shutdown then waited
+for it forever. On this Mac the same error was logged in most runs but it never turned into a
+hang, which is why my runs for #20 passed.
+
+| Decision | Why |
+|---|---|
+| D-088: A connection handler never awaits the database itself. Queries (the append, catch-up's read) run through `AppTasks.shielded`, a task the app tracks and the handler awaits through `asyncio.shield`. Snapshots are no longer checked per message: `SnapshotScheduler` counts each room's appends in memory (seeded once from the database during the room's first catch-up in this process) and, when one is due, spawns one tracked task per room, outside the lock. The lifespan calls `AppTasks.shutdown()` before `engine.dispose()`: it sends close 1012 to every client, gives each handler 0.5 s to exit and then cancels it, then waits up to 5 s for the database work and cancels whatever overruns. | A handler can be cancelled at any await, by things outside our control, so the fix has to make that harmless rather than avoid it. A shielded query finishes and closes its session even if its caller is gone, and the shutdown order means nothing is using the engine when it's disposed. Counting in memory removes the per-message round trip, about 0.5 ms (D-082). A snapshot is only a cache, so skipping one is fine: a room that was never seeded counts from 0, a failed or cancelled snapshot is logged and skipped, and ops that arrive while one is being written count towards the next. Rejected: wrapping each query in `asyncio.shield` inline (the same idea, but nothing would track the orphaned task for shutdown), and catching `CancelledError` to close the session by hand (it's cancelled again by anyio's cancel scope, which is how it broke in the first place). |
+
+**Details:**
+- New: `server/app/realtime/tasks.py` (`AppTasks`). Changed: `SnapshotScheduler`,
+  `ops_since_snapshot` and `write_snapshot` in `app/sync/state.py`, which replace
+  `maybe_snapshot`; the handler in `app/realtime/websocket.py`; the lifespan in `app/main.py`,
+  which now sets up the locks, tasks and scheduler (the `hasattr` lock hack is gone).
+- **The regression guard:** the `client` fixture now records SQLAlchemy pool errors and fails
+  the test if there are any, checked after shutdown. With the old code, 24 of the 33 relay tests
+  fail it, and with the old per-message query put back into the new code, about 30 of 52 do.
+  With the fix, none do.
+- New tests: clients leaving right after a broadcast with a snapshot due every message (20
+  rounds); a client leaving during a 301-message catch-up (10 times), after which the room still
+  works; a snapshot at the threshold through the relay; real uvicorn with two clients connected
+  and a snapshot due, stopped with SIGTERM (under 3 s, clean log); `AppTasks` unit tests
+  (shielding, shutdown order, overrun); and scheduler tests (threshold, seeding, one per room,
+  failure, cancellation mid-query).
+- Hang-proofing: `pytest-timeout` in the server's dev deps, with `timeout = 30` per test, and
+  `timeout-minutes: 10` on every CI job.
+- Runs: `tests/realtime` 10 times (52 passed each) and the full server suite 3 times (622
+  passed each), all under a watchdog, with no hang and no "terminating connection" in any output.
+  Add-on: 144 passed. `docker_smoke.sh` passes. A separate Compose project with
+  `COLLAB_SNAPSHOT_EVERY=1` and two connected clients that had just relayed: `docker compose stop`
+  took 0.4 s, exit 0, and the clients got close code 1012. Uvicorn also sends 1012 to open
+  connections on shutdown, before the lifespan's, so in Docker I can't tell which of the two
+  closed them. Either way, `AppTasks.shutdown` waits for the snapshot tasks before the engine goes.
+
+**Open / follow-up:**
+- The hang never reproduced on this Mac, only the error that causes it. The pool-error check is
+  what shows the fix, here and on CI.
+- Snapshot tasks for one room don't queue: ops that arrive while one is running count towards
+  the next, so with `COLLAB_SNAPSHOT_EVERY=1` some seqs are skipped. At 500 that's immaterial.
+

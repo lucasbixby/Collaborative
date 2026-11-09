@@ -633,3 +633,30 @@ def test_round_trip_create_set_delete_into_an_empty_scene(sent, monkeypatch):
     assert ids.find_object(collab_id) is None
     assert collab_id in ordering.tombstones
     assert echoes == []
+
+
+# -- A create counts as a write of what it carries (#20, D-081) ---------------------------
+
+
+def test_a_set_older_than_the_applied_create_loses(sent):
+    collab_id = _new_id()
+    _receive(_create_op(collab_id, lamport=10))
+    obj = ids.find_object(collab_id)
+
+    _receive(_location_op(collab_id, [9.0, 9.0, 9.0], lamport=5))
+    assert tuple(obj.location) == pytest.approx((1.0, 2.0, 3.0))
+
+    _receive(_location_op(collab_id, [7.0, 7.0, 7.0], lamport=11))
+    assert tuple(obj.location) == pytest.approx((7.0, 7.0, 7.0))
+
+
+def test_a_set_older_than_our_own_create_loses(sent):
+    obj = _add_cube()
+    obj.location = (1.0, 2.0, 3.0)
+    _settle()
+    detect.flush()
+    created = _ops(sent, "create")[0]
+
+    _receive(_location_op(created["object"], [9.0, 9.0, 9.0], lamport=created["lamport"] - 1))
+
+    assert tuple(obj.location) == pytest.approx((1.0, 2.0, 3.0))

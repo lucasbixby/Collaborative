@@ -5,11 +5,12 @@ import bpy
 from . import client
 
 _STATUS_WATCH_INTERVAL = 0.25  # seconds
-_last_seen_status: str | None = None
+_last_seen_status: tuple[str, bool] | None = None
 
 _STATUS_TEXT = {
     "disconnected": "Not connected",
     "connecting": "Connecting to {room}…",
+    "syncing": "Catching up with {room}…",
     "connected": "Connected to {room}",
     "reconnecting": "Reconnecting to {room}…",
 }
@@ -30,7 +31,7 @@ class COLLAB_PT_main(bpy.types.Panel):
         row.enabled = current_status == "disconnected"
         row.prop(wm, "room_id", text="Room")
 
-        status_text = _STATUS_TEXT[current_status].format(room=wm.room_id)
+        status_text = _STATUS_TEXT[_shown_status()].format(room=wm.room_id)
         layout.label(text=f"Status: {status_text}")
         layout.operator("collaborative.join_room")
         layout.operator("collaborative.leave_room")
@@ -38,6 +39,14 @@ class COLLAB_PT_main(bpy.types.Panel):
         layout.separator()
         layout.label(text="Apply (dev aid, #6)")
         layout.operator("collaborative.apply_from_clipboard")
+
+
+def _shown_status() -> str:
+    """The client's status, with "connected" split until the room's catch-up is in (#20)."""
+    current = client.status()
+    if current == "connected" and not client.synced():
+        return "syncing"
+    return current
 
 
 def _tag_redraw_viewports() -> None:
@@ -52,10 +61,10 @@ def _tag_redraw_viewports() -> None:
 
 def _watch_status() -> float:
     """Blender only redraws the panel on mouse hover, but `client.status()` changes on
-    a background thread, so this timer polls it and asks for a redraw when it changes.
-    Reads `status()` only — never touches the socket."""
+    a background thread, so this timer polls it (and `synced()`) and asks for a redraw when
+    either changes. Reads them only — never touches the socket."""
     global _last_seen_status
-    current = client.status()
+    current = (client.status(), client.synced())
     if current != _last_seen_status:
         _last_seen_status = current
         _tag_redraw_viewports()

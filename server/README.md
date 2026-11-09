@@ -26,6 +26,20 @@ existing one, so after a change to a table's columns, delete the file and start 
 In Docker, the database is in `/srv/data`, on the `server-data` volume from `docker-compose.yml`.
 See "Run the server" in the [main README](../README.md).
 
+## Room state and snapshots (#20)
+
+A client that connects is sent the room's current state first, so Blenders don't need to share a
+file. The state is the latest snapshot plus the log after it. A snapshot is written once a room's
+log has grown `COLLAB_SNAPSHOT_EVERY` operations (default 500) past the last one, into the
+`snapshots` table next to `operations`. The log itself is never trimmed. To look at a room:
+
+```bash
+curl localhost:8000/api/rooms/demo/snapshot              # current state, as ops
+curl "localhost:8000/api/rooms/demo/operations?since=40" # log rows after seq 40
+```
+
+After pulling #20, an existing database just gains the `snapshots` table at startup (D-067).
+
 ## Reading the log
 
 ```bash

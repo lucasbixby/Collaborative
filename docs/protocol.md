@@ -5,7 +5,8 @@ plain dictionaries, and the server parses them with the models in
 `server/app/sync/operations.py` (#7). Both sides follow this document; when they
 disagree, this document is right and the code is fixed.
 
-**Version 1** · status: `ops` and `error` specified; `join`, `catch_up` and `snapshot` TODO.
+**Version 1** · status: `ops`, `error` and `synced` specified, with catch-up on connect (#20);
+`join` (auth) TODO with #16.
 Design decisions D-022 to D-026 in [devlog.md](devlog.md), based on the change-detection spike
 ([spike-notes.md](spike-notes.md)).
 
@@ -27,10 +28,12 @@ Every message is an object with a protocol version `v` and a `type`.
 | `type` | Direction | Purpose | Status |
 |---|---|---|---|
 | `ops` | add-on → server → other add-ons | A batch of operations | **Specified below** |
-| `join` | add-on → server | Introduce the client (origin ID, last Lamport seen) | TODO with #16 / #20 |
-| `catch_up` | add-on → server | Ask for operations missed while disconnected | TODO with #20 |
-| `snapshot` | server → add-on | Full room state for a client that is too far behind | TODO with #20 |
+| `synced` | server → add-on | The room's catch-up is complete | **Specified below** (#20) |
 | `error` | server → add-on | A message was rejected, and why | **Specified below** |
+| `join` | add-on → server | Introduce the client (auth token) | TODO with #16 |
+
+There's no `catch_up` request and no `snapshot` message: the server sends every new connection
+the room's state as ordinary `ops` messages, then `synced` (D-084; see [Connection](#connection)).
 
 ### `ops`: a batch of operations
 
@@ -73,6 +76,25 @@ couldn't save to its log. The connection stays open: one bad message doesn't dis
 | `v` | `1` | Protocol version |
 | `type` | `"error"` | Message type |
 | `message` | string | Human-readable reason, for logs and debugging. Not meant to be parsed |
+
+### `synced`: catch-up is complete
+
+Sent once per connection, after the room's catch-up (see [Connection](#connection)). Everything
+the client receives after it is live.
+
+```json
+{
+  "v": 1,
+  "type": "synced",
+  "seq": 1234
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `v` | `1` | Protocol version |
+| `type` | `"synced"` | Message type |
+| `seq` | integer, 0 or more | The last log `seq` the catch-up includes; 0 for a room with no operations |
 
 ## Operations
 
@@ -160,7 +182,14 @@ Only the common fields.
    `origin`, is skipped. Each client's own Lamport clock only ever moves forward: it ticks
    for its own edits and merges in (`max`) every timestamp it receives, and never resets,
    not even across rejoining. The server's log (#19) records arrival order as `seq`, which
-   is the catch-up cursor, not a conflict rule. Serving catch-up is #20; server ordering is #21.
+   is the catch-up cursor, not a conflict rule. The server folds the log with these same rules
+   to build a room's state for catch-up (#20); server ordering is #21.
+
+   **A `create` counts as a write of what it carries (#20, D-081).** It sets `location`,
+   `rotation`, `scale` and `name` at its own (`lamport`, `origin`), so a `set` older than the
+   object's `create` loses. Live, every `set` from another client is newer anyway, because
+   that client had to see the `create` first; the rule matters for a client that edits an
+   object during catch-up and then offers it to the room (rule 10).
 2. **Deletes win (D-026).** Once an object is deleted, later operations for it are ignored,
    whatever their timestamp. Clients remember deleted IDs (tombstones) so late-arriving
    operations stay ignored, including a `delete` for an ID they never had, whose `create` may
@@ -196,7 +225,15 @@ Only the common fields.
 9. **A `set` for an unknown object is dropped, not buffered (D-057).** Each client's messages
    reach others in the order it sent them and its `create` goes first (see `create`), so this
    only happens to a client that missed the `create`. The object, if it arrives later, has the
-   `create`'s values.
+   `create`'s values. A client that missed operations while disconnected gets them back from
+   the catch-up on reconnect (#20).
+
+10. **Merge on join (#20, D-085).** On the first `synced` after the user joins a room, the
+    add-on sends a `create` for each local mesh object whose ID the catch-up didn't mention
+    (in a `create`, `set` or `delete`), with the usual rules: one per message, size-checked,
+    meshes only. A reconnect within the same Join sends nothing extra: edits made while
+    disconnected are already queued. Edits made while not in a room at all are never sent,
+    so an object the room already knows keeps the room's state on other clients.
 
 ## Not synced yet
 
@@ -440,8 +477,42 @@ Deleting it:
 `ws://<host>:8000/ws/rooms/{room_id}`, with the auth token sent on connect.
 
 `room_id` must match `^[A-Za-z0-9_-]{1,64}$`; the server closes the connection with code
-`1008` otherwise. The room exists only while at least one client is in it: it's created on
-the first `join` and removed on the last `leave` (#11). No auth yet (TODO #16 / #17): any
-client may join any room.
+`1008` otherwise. A room's connections exist only while at least one client is in it, but its
+operations and snapshots are kept (#19, #20). No auth yet (TODO #16 / #17): any client may join
+any room.
 
-_TODO with #16 / #20: handshake (`join`), reconnect and catch-up sequence._
+### Catch-up on connect (#20)
+
+Every new connection, whether it's a first join, a late join or a reconnect after a drop, gets
+the same sequence, so a client never has to ask for what it missed (D-084):
+
+1. The server adds the connection to the room.
+2. It computes the room's current state: the latest snapshot, plus the log after it, folded with
+   rules 1–3.
+3. It sends that state as ordinary `ops` messages, with each operation's original `lamport` and
+   `origin`: every `create` in a message of its own, then the winning `set`s, then one `delete`
+   per deleted ID, so a client still holding a deleted object removes it and remembers the
+   tombstone. `set`s and `delete`s are batched one origin per message (rule 4), and every
+   message is at most 64 KiB.
+4. It sends `synced`.
+
+Then the connection is live. The server holds the room's lock (D-083) through steps 1–4 and
+around "save → forward" (rule 8), so no live operation reaches a client before its catch-up,
+and none falls between reading the state and joining. Duplicates are harmless, since operations
+are idempotent under last-writer-wins and tombstones, but nothing is lost.
+
+The client applies catch-up `ops` like any other (rules 1–3), and skips any of its own.
+
+**Snapshots** are a cache over the log, which is never trimmed: one is written whenever a
+room's log has grown `COLLAB_SNAPSHOT_EVERY` operations (default 500) past the last (D-082).
+
+### REST (#20)
+
+No auth yet (TODO #16 / #17). `room_id` follows the same pattern as the socket, or the reply is `422`.
+
+| Request | Response |
+|---|---|
+| `GET /api/rooms/{room_id}/snapshot` | `{"room_id", "seq", "ops": [...]}`: the room's current state, the same operations catch-up sends, and the last `seq` included |
+| `GET /api/rooms/{room_id}/operations?since=<seq>&limit=<n>` | `{"room_id", "operations": [{"seq", "received_at", "op"}]}`: log rows with `seq` above `since` (default 0), oldest first, at most `limit` (1–1000, default 1000). For the next page, pass the last row's `seq` |
+
+The cursor is `seq`, the server's arrival order, never a Lamport time.
