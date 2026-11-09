@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 
 import pytest
 from conftest import FakeRelay
@@ -115,3 +116,59 @@ def test_invalid_room_id_is_refused():
         client.connect("ws://localhost:9", "bad room!", lambda message: None)
 
     assert client.status() == "disconnected"
+
+
+# -- Sign-in (#16, #17) -------------------------------------------------------------------
+
+
+def test_the_token_is_sent_as_an_authorization_header(relay):
+    client.connect(f"ws://localhost:{relay.port}", "room-a", lambda message: None, token="t0k")
+    _wait_until(lambda: client.status() == "connected")
+
+    assert relay.authorizations == ["Bearer t0k"]
+
+
+def test_no_token_sends_no_authorization_header(relay):
+    client.connect(f"ws://localhost:{relay.port}", "room-a", lambda message: None)
+    _wait_until(lambda: client.status() == "connected")
+
+    assert relay.authorizations == [None]
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"), [(4401, "sign in first"), (4403, "no access to room-a")]
+)
+def test_a_refusal_stops_the_client_instead_of_reconnecting(relay, code, reason):
+    relay.refuse_with = (code, reason)
+    client.connect(f"ws://localhost:{relay.port}", "room-a", lambda message: None, token="t0k")
+
+    _wait_until(lambda: client.status() == "refused")
+    assert client.refusal() == (code, reason)
+    # Longer than the first two backoff steps (0.5 s, 1 s): no second attempt was made.
+    time.sleep(2)
+    assert len(relay.authorizations) == 1
+    assert not client._conn._writer.is_alive()
+
+
+def test_an_ordinary_close_still_reconnects(relay):
+    client.connect(f"ws://localhost:{relay.port}", "room-a", lambda message: None)
+    _wait_until(lambda: client.status() == "connected")
+
+    relay.drop_clients()
+
+    _wait_until(lambda: len(relay.authorizations) == 2, timeout=5)
+    _wait_until(lambda: client.status() == "connected")
+    assert client.refusal() is None
+
+
+def test_join_again_after_a_refusal_makes_a_fresh_attempt(relay):
+    relay.refuse_with = (4401, "sign in first")
+    client.connect(f"ws://localhost:{relay.port}", "room-a", lambda message: None)
+    _wait_until(lambda: client.status() == "refused")
+
+    relay.refuse_with = None
+    client.connect(f"ws://localhost:{relay.port}", "room-a", lambda message: None, token="new")
+
+    _wait_until(lambda: client.status() == "connected")
+    assert relay.authorizations == [None, "Bearer new"]
+    assert client.refusal() is None

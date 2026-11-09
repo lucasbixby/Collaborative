@@ -2,7 +2,7 @@
 
 The socket already sends a joining client the room's state (app.realtime.websocket), so these
 are for anything else that wants to look: the web UI, scripts, debugging. Both read through
-the same functions the socket uses. No auth yet: TODO(#16/#17) check the caller may see the room.
+the same functions the socket uses. Both need a signed-in user (#16).
 """
 
 import json
@@ -10,6 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Query, Request
 
+from app.auth.dependencies import CurrentUser
 from app.sync import log
 from app.sync.state import load_state
 
@@ -20,7 +21,7 @@ RoomId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 
 
 @router.get("/{room_id}/snapshot")
-async def get_snapshot(request: Request, room_id: RoomId) -> dict:
+async def get_snapshot(request: Request, room_id: RoomId, user: CurrentUser) -> dict:
     """The room's current state as ops (latest snapshot + log after it), and the last `seq`
     included. An unknown room is just empty: rooms aren't records yet."""
     async with request.app.state.sessions() as session:
@@ -32,6 +33,7 @@ async def get_snapshot(request: Request, room_id: RoomId) -> dict:
 async def get_operations(
     request: Request,
     room_id: RoomId,
+    user: CurrentUser,
     since: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=log.MAX_SINCE_LIMIT)] = log.MAX_SINCE_LIMIT,
 ) -> dict:

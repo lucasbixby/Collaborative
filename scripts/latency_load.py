@@ -2,13 +2,14 @@
 """Simulated clients for the load scenario (#24): each adds one object, then moves it steadily.
 
 Needs `websockets`, e.g. server/.venv/bin/python scripts/latency_load.py latency --clients 8
-Stops on Ctrl+C or SIGTERM and prints how many messages it managed to send.
+--token <token> (or COLLAB_TOKEN; latency_run.py passes its own). Stops on Ctrl+C or SIGTERM and prints how many messages it managed to send.
 """
 
 import argparse
 import asyncio
 import json
 import math
+import os
 import signal
 import time
 import uuid
@@ -40,9 +41,11 @@ async def _discard(ws) -> None:
         pass
 
 
-async def _client(uri: str, rate: float, stop: asyncio.Event, sent: list[int], index: int) -> None:
+async def _client(
+    uri: str, headers: dict, rate: float, stop: asyncio.Event, sent: list[int], index: int
+) -> None:
     origin, obj = str(uuid.uuid4()), str(uuid.uuid4())
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, additional_headers=headers) as ws:
         reader = asyncio.create_task(_discard(ws))
         await ws.send(json.dumps({"v": 1, "type": "ops", "ops": [_create(origin, obj)]}))
         lamport = 1
@@ -71,7 +74,9 @@ async def main() -> None:
     parser.add_argument("--url", default="ws://localhost:8000")
     parser.add_argument("--clients", type=int, default=4)
     parser.add_argument("--rate", type=float, default=20, help="messages/s per client (detect's limit)")
+    parser.add_argument("--token", default=os.environ.get("COLLAB_TOKEN"), help="or COLLAB_TOKEN")
     args = parser.parse_args()
+    headers = {"Authorization": f"Bearer {args.token}"} if args.token else {}
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -80,7 +85,7 @@ async def main() -> None:
     sent = [0] * args.clients
     started = time.monotonic()
     uri = f"{args.url}/ws/rooms/{args.room_id}"
-    await asyncio.gather(*(_client(uri, args.rate, stop, sent, i) for i in range(args.clients)))
+    await asyncio.gather(*(_client(uri, headers, args.rate, stop, sent, i) for i in range(args.clients)))
     elapsed = time.monotonic() - started
     print(f"{args.clients} clients sent {sum(sent)} messages in {elapsed:.1f} s: {sum(sent) / elapsed:.0f}/s")
 

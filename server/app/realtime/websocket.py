@@ -1,8 +1,12 @@
 """WebSocket relay endpoint: one connection per client, one room per project (#11).
 
-Minimal version for the prototype (10/24): no accounts (TODO #16 / #17), no ordering
-beyond arrival order (#8 / #9). A room's connections exist only while at least one client
-is in it, but its operations are kept in the log (#19).
+A room's connections exist only while at least one client is in it, but its operations are
+kept in the log (#19).
+
+Sign-in (#16): the token comes in the `Authorization: Bearer` header, never the URL, which
+uvicorn's access log records. The socket is accepted first and then closed with 4401 if the
+token is missing or bad, so a client sees the code and the reason rather than a failed
+handshake (docs/protocol.md).
 
 On connect, catch-up (#20): under the room's lock, the socket joins the room, gets the room's
 current state as ordinary `ops` messages (app.sync.state), then `{"type": "synced", "seq": N}`.
@@ -34,6 +38,8 @@ import re
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.auth.tokens import InvalidToken, bearer_token, verify_token
+from app.db.models import User
 from app.sync import log as operation_log
 from app.sync import state as room_state
 from app.sync import timing
@@ -49,6 +55,10 @@ manager = ConnectionManager()
 origins = OriginRegistry()
 
 ROOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# Close codes in the 4000s are the application's own (RFC 6455 7.4.2). Like HTTP's 401: the
+# client should sign in (again) before retrying, not reconnect with the same token.
+CLOSE_UNAUTHENTICATED = 4401
 
 
 async def _send_error(websocket: WebSocket, reason: str) -> None:
@@ -76,6 +86,27 @@ async def _append(app, room_id: str, message) -> list[int]:
         return await operation_log.append(session, room_id, message)
 
 
+async def _find_user(app, token: str) -> User | None:
+    async with app.state.sessions() as session:
+        try:
+            return await verify_token(session, token)
+        except InvalidToken:
+            return None
+
+
+async def _authenticate(websocket: WebSocket) -> User | None:
+    """The signed-in user, or None after closing the socket with 4401."""
+    token = bearer_token(websocket.headers.get("authorization"))
+    user = None
+    if token is not None:
+        user = await websocket.app.state.tasks.shielded(_find_user(websocket.app, token))
+    if user is None:
+        reason = "sign in first" if token is None else "invalid or expired token; sign in again"
+        logger.info("refused: %s", reason)
+        await websocket.close(code=CLOSE_UNAUTHENTICATED, reason=reason)
+    return user
+
+
 async def _join_and_catch_up(websocket: WebSocket, room_id: str) -> int:
     """Join the room, then send its state and `synced`, all under the room's lock. A client
     that leaves part way through just ends this early: the read is shielded, and the lock and
@@ -100,7 +131,9 @@ async def room_socket(websocket: WebSocket, room_id: str) -> None:
 
     await websocket.accept()
     with websocket.app.state.tasks.handler(websocket):
-        await _relay(websocket, room_id)
+        user = await _authenticate(websocket)
+        if user is not None:
+            await _relay(websocket, room_id)
 
 
 async def _relay(websocket: WebSocket, room_id: str) -> None:

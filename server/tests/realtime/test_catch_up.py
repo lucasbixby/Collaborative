@@ -22,6 +22,7 @@ from app.db.models import Snapshot
 from app.sync import log as operation_log
 from app.sync.conflicts import RoomState
 from app.sync.operations import parse_message
+from tests.accounts import PASSWORD, bearer
 from tests.catchup import joined, read_catch_up
 from tests.sync.test_conflicts import A, B, X, Y, create, delete, move
 
@@ -354,10 +355,14 @@ def test_uvicorn_stops_promptly_with_a_client_connected(tmp_path):
     )
     try:
         _wait_until(lambda: _healthy(port), timeout=15)
+        headers = bearer(_sign_up(port, "shutdown"))
 
         async def _client():
             uri = f"ws://127.0.0.1:{port}/ws/rooms/shutdown"
-            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+            async with (
+                websockets.connect(uri, additional_headers=headers) as a,
+                websockets.connect(uri, additional_headers=headers) as b,
+            ):
                 for ws in (a, b):
                     while json.loads(await ws.recv())["type"] != "synced":
                         pass
@@ -382,6 +387,22 @@ def test_uvicorn_stops_promptly_with_a_client_connected(tmp_path):
     assert "Application shutdown complete" in output, output
     assert "Exception terminating connection" not in output
     assert "Traceback" not in output, output
+
+
+def _post(port, path, body, headers=None) -> dict:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read())
+
+
+def _sign_up(port, username) -> str:
+    credentials = {"username": username, "password": PASSWORD}
+    _post(port, "/api/auth/register", credentials)
+    return _post(port, "/api/auth/login", credentials)["token"]
 
 
 def _healthy(port) -> bool:

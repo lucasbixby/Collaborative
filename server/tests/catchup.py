@@ -4,6 +4,8 @@ starts with the room's catch-up (`ops` messages) and then one `synced`."""
 import json
 from contextlib import contextmanager
 
+from tests.accounts import sign_in
+
 
 def read_catch_up(ws) -> tuple[list[dict], int]:
     """Read the catch-up messages and the `synced` that ends them: (messages, seq)."""
@@ -18,7 +20,10 @@ def read_catch_up(ws) -> tuple[list[dict], int]:
 
 @contextmanager
 def joined(test_client, room_id: str):
-    """A socket in `room_id` that has already read its catch-up, kept as `ws.catch_up`."""
+    """A socket in `room_id` that has already read its catch-up, kept as `ws.catch_up`. A
+    client that isn't signed in yet is signed in as "tester" first (#16)."""
+    if "authorization" not in test_client.headers:
+        sign_in(test_client)
     with test_client.websocket_connect(f"/ws/rooms/{room_id}") as ws:
         ws.catch_up, ws.synced_seq = read_catch_up(ws)
         yield ws

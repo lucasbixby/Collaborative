@@ -18,11 +18,17 @@ messages, then `{"type": "synced", "seq": N}`. `ops` go to `on_message` as usual
 mentioned, which is how detect knows which local objects the room hasn't seen (D-085). Each
 inbox entry carries its socket's generation, so a `synced` left over from a dead socket can't
 mark the next one as caught up.
+
+Sign-in (#16, #17): the token goes in an `Authorization: Bearer` header, never the URL. If the
+server closes with 4401 (no or bad token) or 4403 (no access to the room), retrying with the same
+token can only fail the same way, so the connection stops instead of reconnecting, with status
+"refused" and the code in `refusal()`.
 """
 
 import json
 import queue
 import re
+import struct
 import threading
 import time
 from collections import deque
@@ -39,6 +45,10 @@ RECONNECT_BACKOFF = (0.5, 1, 2, 4)  # seconds; every 8 s after that
 RECONNECT_STEADY = 8
 OUTBOX_LIMIT = 1000
 
+CLOSE_UNAUTHENTICATED = 4401  # sign in (again) first
+CLOSE_FORBIDDEN = 4403  # not a member of the room, or it doesn't exist
+_REFUSALS = (CLOSE_UNAUTHENTICATED, CLOSE_FORBIDDEN)
+
 # Same pattern the server enforces (docs/protocol.md, #11); checked here too so a typo'd
 # room id fails immediately instead of after a network round trip.
 _ROOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -53,11 +63,14 @@ class _Connection:
         url: str,
         on_message: Callable[[dict], None],
         on_synced: Callable[[set[str]], None] | None = None,
+        token: str = "",
     ) -> None:
         self.url = url
         self.on_message = on_message
         self.on_synced = on_synced
+        self._header = [f"Authorization: Bearer {token}"] if token else []
         self.status = "connecting"
+        self.refused: tuple[int, str] | None = None  # set by the reader on a 4401 / 4403 close
         self.inbox: queue.Queue[tuple[int, str]] = queue.Queue()
         # `generation` is bumped by the writer thread for each new socket; the rest is only
         # touched on the main thread, in drain().
@@ -96,7 +109,7 @@ class _Connection:
         while not self._stopping.is_set():
             try:
                 sock = _ws.WebSocket()
-                sock.connect(self.url)
+                sock.connect(self.url, header=self._header)
             except Exception as exc:  # noqa: BLE001 - any failure here just means retry
                 log("client: connect failed", exc)
                 self.status = "reconnecting"
@@ -121,6 +134,11 @@ class _Connection:
             reader.join(timeout=2)
             with self._socket_lock:
                 self._socket = None
+            if self.refused is not None:
+                code, reason = self.refused
+                log(f"client: the server refused the connection ({code} {reason}); not retrying")
+                self.status = "refused"
+                return
             if not self._stopping.is_set():
                 self.status = "reconnecting"
 
@@ -148,16 +166,30 @@ class _Connection:
     def _run_reader(self, sock: "_ws.WebSocket", dead: threading.Event, generation: int) -> None:
         while not dead.is_set():
             try:
-                text = sock.recv()
+                # recv_data rather than recv: recv turns a close frame into "", losing its code.
+                opcode, data = sock.recv_data()
             except Exception as exc:  # noqa: BLE001 - any recv failure means reconnect
                 log("client: recv failed", exc)
                 dead.set()
                 return
-            if text == "":  # the verified close() signal, not an exception
+            if opcode == _ws.ABNF.OPCODE_CLOSE:
+                self._note_close(data)
+                dead.set()
+                return
+            text = data.decode("utf-8", "replace") if isinstance(data, bytes) else data
+            if text == "":  # what a socket closed from our side gives
                 dead.set()
                 return
             timing.mark("received", text)
             self.inbox.put((generation, text))
+
+    def _note_close(self, data: bytes) -> None:
+        """Remember a 4401 / 4403 close, so the writer stops instead of reconnecting."""
+        if len(data) < 2:
+            return
+        code = struct.unpack("!H", data[:2])[0]
+        if code in _REFUSALS:
+            self.refused = (code, data[2:].decode("utf-8", "replace"))
 
     def _wait_backoff(self, attempt: int) -> None:
         delay = RECONNECT_BACKOFF[attempt] if attempt < len(RECONNECT_BACKOFF) else RECONNECT_STEADY
@@ -172,8 +204,10 @@ def connect(
     room_id: str,
     on_message: Callable[[dict], None],
     on_synced: Callable[[set[str]], None] | None = None,
+    token: str = "",
 ) -> None:
-    """Connect to `<server_url>/ws/rooms/<room_id>` and return immediately.
+    """Connect to `<server_url>/ws/rooms/<room_id>`, signed in with `token`, and return
+    immediately.
 
     `on_message` is called (on the main thread, from `drain()`) with each `ops` message, and
     `on_synced` once, at the first `synced`, with the IDs the room's catch-up mentioned.
@@ -186,7 +220,7 @@ def connect(
     if _conn is not None:
         _conn.stop()
     url = f"{server_url.rstrip('/')}/ws/rooms/{room_id}"
-    _conn = _Connection(url, on_message, on_synced)
+    _conn = _Connection(url, on_message, on_synced, token)
     if not bpy.app.timers.is_registered(_tick):
         bpy.app.timers.register(_tick, first_interval=DRAIN_INTERVAL, persistent=True)
 
@@ -210,8 +244,14 @@ def disconnect() -> None:
 
 
 def status() -> str:
-    """`"disconnected"`, `"connecting"`, `"connected"` or `"reconnecting"`."""
+    """`"disconnected"`, `"connecting"`, `"connected"`, `"reconnecting"`, or `"refused"`: the
+    server closed with 4401 or 4403, and the client has stopped (see `refusal()`)."""
     return _conn.status if _conn is not None else "disconnected"
+
+
+def refusal() -> tuple[int, str] | None:
+    """The close code and reason the server refused the connection with, if it did."""
+    return _conn.refused if _conn is not None else None
 
 
 def synced() -> bool:

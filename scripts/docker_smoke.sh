@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end check of the Docker setup (#23): clean build, relay, restart, volume, non-root.
+# End-to-end check of the Docker setup (#23): clean build, sign-in (#16), relay, restart, volume,
+# non-root.
 #
 #   scripts/docker_smoke.sh
 #
@@ -12,6 +13,9 @@ export COMPOSE_PROJECT_NAME=collaborative-smoke
 export COLLAB_SECRET_KEY=dev-only-change-me  # the default, whatever a local .env says
 VOLUME="${COMPOSE_PROJECT_NAME}_server-data"
 ROOM=demo
+USERNAME=smoke
+PASSWORD=smoke-password
+TOKEN=""
 STOP_LIMIT=5  # seconds; Docker's kill comes at 10
 
 step() { printf '\n== %s\n' "$*"; }
@@ -60,13 +64,36 @@ pass "/health answers on the published port"
 [[ "$(docker compose logs server)" == *COLLAB_SECRET_KEY* ]] || fail "no secret-key warning in the logs"
 pass "the default secret key is warned about"
 
-step "3. relay between two clients in room $ROOM"
-docker compose exec -T server python - relay "$ROOM" < scripts/smoke_client.py || fail "relay check failed"
+# The smoke client runs in the container, signed in through COLLAB_TOKEN.
+smoke_client() { docker compose exec -T -e COLLAB_TOKEN="$TOKEN" server python - "$@" < scripts/smoke_client.py; }
+
+# FastAPI's JSON is compact, so the token is the text between "token":" and the next quote.
+json_token() { sed -n 's/.*"token":"\([^"]*\)".*/\1/p'; }
+
+api() {  # api METHOD PATH [JSON]: a REST call as $USERNAME, printing the body
+  curl -fsS -m 5 -X "$1" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    ${3:+-d "$3"} "http://localhost:8000$2"
+}
+
+step "3a. register and sign in over REST"
+credentials="{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}"
+curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d "$credentials" \
+  http://localhost:8000/api/auth/register >/dev/null || fail "register failed"
+TOKEN="$(curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d "$credentials" \
+  http://localhost:8000/api/auth/login | json_token)"
+[[ -n "$TOKEN" ]] || fail "login returned no token"
+[[ "$(api GET /api/auth/me)" == *"\"username\":\"$USERNAME\""* ]] || fail "/api/auth/me doesn't know the token"
+pass "registered $USERNAME and got a token"
+smoke_client refused "$ROOM" || fail "a socket without a token wasn't refused with 4401"
+pass "a socket without a token is closed with 4401"
+
+step "3b. relay between two clients in room $ROOM"
+smoke_client relay "$ROOM" || fail "relay check failed"
 pass "second client received the operations"
 expect_log_count 3
 
 step "4a. stop with a client connected exits cleanly and quickly"
-docker compose exec -T server python - hold "$ROOM" < scripts/smoke_client.py &
+smoke_client hold "$ROOM" &
 holder=$!
 sleep 2
 kill -0 "$holder" 2>/dev/null || fail "the connected client exited early"

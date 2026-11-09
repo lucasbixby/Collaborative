@@ -6,12 +6,15 @@ so scripts/latency_report.py --rtt can pair them from the Blender side's file al
 machines don't agree, so this records no times at all.
 
     pip install websockets
-    python3 latency_probe.py latency --url ws://<server-ip>:8000
+    python3 latency_probe.py latency --url ws://<server-ip>:8000 --token <token>
+
+The token (or COLLAB_TOKEN) is a member's: latency_run.py prints one for its room.
 """
 
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 
@@ -31,9 +34,13 @@ def reply_to(message: dict, origin: str) -> dict | None:
     return {"v": 1, "type": "ops", "ops": replies} if replies else None
 
 
-async def answer(uri: str) -> None:
+def auth_headers(token: str | None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+async def answer(uri: str, token: str | None) -> None:
     origin = str(uuid.uuid4())
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, additional_headers=auth_headers(token)) as ws:
         print(f"Connected to {uri}. Answering moves; Ctrl+C to stop.", flush=True)
         answered = 0
         async for raw in ws:
@@ -49,15 +56,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("room_id")
     parser.add_argument("--url", default="ws://localhost:8000")
+    parser.add_argument("--token", default=os.environ.get("COLLAB_TOKEN"), help="or COLLAB_TOKEN")
     args = parser.parse_args()
 
     uri = f"{args.url}/ws/rooms/{args.room_id}"
     try:
-        asyncio.run(answer(uri))
+        asyncio.run(answer(uri, args.token))
     except KeyboardInterrupt:
         pass
     except ConnectionClosed as exc:
         print(f"The server closed the connection: {exc}")
+        if exc.rcvd is not None and exc.rcvd.code in (4401, 4403):
+            print("Pass a room member's token with --token (latency_run.py prints one).")
+            return 1
     except OSError as exc:
         print(f"Couldn't connect to {uri}: {exc}", file=sys.stderr)
         return 1

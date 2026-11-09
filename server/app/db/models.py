@@ -1,15 +1,40 @@
 """SQLAlchemy models: users, rooms, room members, operation log, snapshots."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-# TODO: User, Room, RoomMember(role)
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator):
+    """A timestamp that reads back in UTC. SQLite keeps no time zone, so without this a time
+    written as UTC comes back naive, and comparing it with `datetime.now(UTC)` (an invite's
+    expiry) raises."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
+class User(Base):
+    """An account (#16). `password_hash` is scrypt's output with its salt and parameters
+    (app.auth.passwords), never the password."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
 class Operation(Base):
