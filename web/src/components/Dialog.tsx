@@ -28,7 +28,7 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      className={wide ? 'dialog wide' : 'dialog'}
+      className={wide ? 'dialog glass wide' : 'dialog glass'}
       aria-label={title}
       onCancel={(event) => {
         event.preventDefault()

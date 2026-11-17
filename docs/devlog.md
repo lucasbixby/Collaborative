@@ -150,7 +150,8 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-112 | Only the newest two snapshots per room are kept | 11/16 | Active |
 | D-113 | A flush's `set`s and `delete`s are split across messages at the size limit | 11/16 | Active |
 | D-114 | CORS allows any origin, without credentials | 11/16 | Active |
-| D-115 | The UI's look: a ruled poster grid in ink on paper, with a generated dot field per room | 11/16 | Active |
+| D-115 | The UI's look: a ruled poster grid in ink on paper, with a generated dot field per room | 11/16 | Revised by D-116 |
+| D-116 | The dot field is the animated background of every screen, under frosted-glass panels; the full wordmark with the logo | 11/16 | Active |
 
 ## Log
 
@@ -1350,3 +1351,18 @@ app, one shared server, "approve" saves the host's file, and invites removed wit
 - Existing databases: `docker compose down -v` isn't needed, but rooms made before today have no password, so they can only be joined through `admin.py add-member`.
 - The app's token is in the page's localStorage (D-101's trade, now for the desktop app). The OS keychain through Electron's `safeStorage` would be better.
 - Still open from before: same-name renames diverge; undo can delete other people's objects; Adjust Last Operation.
+
+### 2026-11-16 · Look: animated dot background, glass panels, logo (#44)
+
+Lucas's review of the first design: the name must not be cropped, the dots should be a main
+element that moves and changes colour, the foreground should be glassy, and his logo goes
+before the name.
+
+| Decision | Why |
+|---|---|
+| D-116: A fixed field of 54 large soft dots sits behind every screen. Each dot swells and shrinks, each row rides up and down a beat after the one above (a wave), and the field turns slowly round the colour wheel (two minutes a lap); the dots are shades of one hue, so they stay a family as it turns. Panels (header, sign-in form, room cards, dialogs) are frosted glass with a faint band of coloured light drifting across. The wordmark is sized from its container so the whole word and the logo always fit. The ruled grid and the cropped wordmark of D-115 are gone; each room's own still dot field stays as its picture. | It's what was asked for, and the glass is what ties the background to the foreground: the field shows through every panel. The dots are radial gradients moved with transforms, with one blur and one hue rotation on the whole field, so the animation stays on the compositor rather than repainting 54 filtered shapes. Reduced-motion still turns all of it off. |
+
+**Details:** `web/src/components/BackgroundField.tsx`, `.field` / `.glass` in `index.css`,
+`web/src/assets/logo.png` (the supplied PNG with its white made transparent, 512 px), used in
+the wordmark and the header. Web: 27 tests pass, lint clean. Checked in headless Chrome: the
+wordmark fits at 820, 1280 and 1600 px wide, and the hue and wave move.

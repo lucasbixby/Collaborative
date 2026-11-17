@@ -118,7 +118,7 @@ function RoomList({ title, rooms, onOpen }: { title: string; rooms: Room[]; onOp
       </p>
       <ul className="rooms">
         {rooms.map((room) => (
-          <li key={room.room_id}>
+          <li key={room.room_id} className="glass">
             <button type="button" className="room-card" onClick={() => onOpen(room.room_id)}>
               <DotField name={room.room_id} />
               <span className="room-name">{room.room_id}</span>

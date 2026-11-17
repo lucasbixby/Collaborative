@@ -4,8 +4,8 @@ import { useState, type FormEvent } from 'react'
 
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../auth'
+import logo from '../assets/logo.png'
 import { ErrorMessage } from '../components/Dialog'
-import { DotField } from '../components/DotField'
 
 export function SignInPage({ onSettings }: { onSettings?: () => void }) {
   const { signIn } = useAuth()
@@ -30,15 +30,13 @@ export function SignInPage({ onSettings }: { onSettings?: () => void }) {
 
   return (
     <div className="signin">
-      <h1 className="wordmark" aria-label="Collaborative">
+      <h1 className="wordmark">
+        <img src={logo} alt="" />
         Collaborative
       </h1>
       <div className="signin-grid">
-        <div className="signin-art">
-          <DotField name={registering ? 'new here' : 'welcome back'} columns={10} rows={7} />
-          <p className="caption">( One Blender scene, edited by several people at once )</p>
-        </div>
-        <form className="signin-form" onSubmit={submit}>
+        <p className="tagline">One Blender scene, edited by several people at once.</p>
+        <form className="signin-form glass" onSubmit={submit}>
           <h2>{registering ? 'Create an account' : 'Log in'}</h2>
           <label>
             Username

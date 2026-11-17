@@ -1,10 +1,11 @@
-/* Paper, ink and a ruled grid: a poster's layout for a small tool. Colour appears only in the
-   dot fields, each room's own picture. */
+/* Ink type on glass, over a slow field of soft dots. The field is the background of every
+   screen; panels are frosted so it shows through them, and each room keeps its own still
+   dot field as its picture. */
 :root {
   --paper: #f6f6f3;
   --sheet: #ffffff;
   --ink: #0c0c0c;
-  --soft: #8b8b86;
+  --soft: #63635f;
   --rule: #dcdcd7;
   --alert: #c8321e;
   --column: calc(min(100vw, 1180px) / 12);
@@ -26,15 +27,79 @@ body {
   min-height: 100vh;
 }
 
-/* The grid the layout sits on, drawn faintly the way a designer leaves construction lines in. */
 .page {
+  position: relative;
   max-width: 1180px;
   min-height: 100vh;
   margin: 0 auto;
   padding: 0 24px 64px;
-  background: repeating-linear-gradient(to right, var(--rule) 0 1px, transparent 1px var(--column)) -1px 0;
-  background-color: var(--sheet);
-  border-inline: 1px solid var(--rule);
+}
+
+.page > :not(.field) {
+  position: relative; /* above the field */
+}
+
+/* The background field. Soft-edged gradients rather than a blur filter on each dot, so 54
+   moving dots cost the compositor almost nothing; one light blur over the whole field melts
+   them together. */
+.field {
+  position: fixed;
+  inset: -8vmax;
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(10px);
+  animation: hue 120s linear infinite;
+}
+
+.field-dot {
+  position: absolute;
+  width: var(--size);
+  height: var(--size);
+  margin: calc(var(--size) / -2);
+  animation: wave 9s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+.field-dot i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(12 12 12 / var(--core)) 0 14%, var(--shade) 36%, transparent 70%);
+  animation: swell var(--swell) ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+/* Glass: a frosted panel the field shows through, with a faint band of coloured light that
+   drifts across it. */
+.glass {
+  position: relative;
+  background: rgb(255 255 255 / 0.56);
+  backdrop-filter: blur(26px) saturate(1.5);
+  -webkit-backdrop-filter: blur(26px) saturate(1.5);
+  border: 1px solid rgb(255 255 255 / 0.75);
+  border-radius: 16px;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.8),
+    0 24px 60px -36px rgb(12 12 12 / 0.35);
+}
+
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+      112deg,
+      transparent 30%,
+      hsl(190 95% 72% / 0.16) 42%,
+      hsl(285 95% 78% / 0.16) 50%,
+      hsl(40 100% 72% / 0.14) 58%,
+      transparent 70%
+    )
+    0 0 / 320% 100%;
+  animation: shimmer 16s ease-in-out infinite alternate;
 }
 
 h1,
@@ -110,6 +175,7 @@ button:disabled {
 .primary,
 .outline,
 .danger {
+  border-radius: 10px;
   padding: 13px 22px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -231,16 +297,24 @@ select {
 .site-header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 16px;
-  padding: 20px 0 18px;
-  border-bottom: 1px solid var(--ink);
+  margin-top: 16px;
+  padding: 12px 20px;
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   font-size: 1.15rem;
   letter-spacing: -0.03em;
+}
+
+.brand img {
+  width: 26px;
+  height: 26px;
 }
 
 .site-header nav {
@@ -249,36 +323,50 @@ select {
   align-items: baseline;
 }
 
-/* Sign-in: the name set too large for the sheet and cropped by it. */
+/* Sign-in: the logo and the whole name across the top, sized from the width they have so the
+   word always fits. */
 .signin {
-  overflow: hidden;
+  container-type: inline-size;
 }
 
 .wordmark {
-  font-size: clamp(5rem, 21.5vw, 16.2rem);
-  line-height: 0.8;
-  letter-spacing: -0.065em;
+  display: flex;
+  align-items: center;
+  gap: 0.1em;
+  font-size: 13.4cqw;
+  line-height: 1;
+  letter-spacing: -0.06em;
   white-space: nowrap;
-  margin: 0 0 0 -0.045em;
-  padding-top: 0.12em;
+  padding-top: 0.32em;
   animation: settle 0.9s var(--ease) both;
+}
+
+.wordmark img {
+  width: 0.92em;
+  height: 0.92em;
+  flex: none;
+  margin-left: -0.04em;
 }
 
 .signin-grid {
   display: grid;
   grid-template-columns: 7fr 5fr;
-  gap: calc(var(--column) * 1);
-  margin-top: 56px;
+  gap: var(--column);
+  margin-top: 9cqw;
   align-items: start;
 }
 
-.signin-art {
-  display: grid;
-  gap: 12px;
+.tagline {
+  max-width: 13em;
+  font-size: clamp(1.4rem, 3.1cqw, 2.3rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
 }
 
 .signin-form {
-  max-width: 340px;
+  max-width: 380px;
+  padding: 28px 28px 24px;
 }
 
 .signin-form h2 {
@@ -303,7 +391,8 @@ select {
 .notice {
   display: grid;
   gap: 16px;
-  padding-top: 64px;
+  margin-top: 64px;
+  padding: 28px;
   max-width: 480px;
 }
 
@@ -330,8 +419,8 @@ select {
 }
 
 .room-section > .caption {
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--ink);
+  padding-bottom: 10px;
+  color: var(--ink);
 }
 
 .count {
@@ -346,12 +435,11 @@ select {
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
 }
 
 .rooms li {
-  border-bottom: 1px solid var(--rule);
-  border-right: 1px solid var(--rule);
-  background: var(--sheet);
+  overflow: hidden;
 }
 
 .room-card {
@@ -450,9 +538,8 @@ select {
   width: min(460px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   padding: 0;
-  border: 1.5px solid var(--ink);
-  background: var(--sheet);
   color: var(--ink);
+  background: rgb(255 255 255 / 0.72);
   animation: rise 0.28s var(--ease);
 }
 
@@ -461,8 +548,8 @@ select {
 }
 
 .dialog::backdrop {
-  background: rgb(246 246 243 / 0.82);
-  backdrop-filter: blur(3px);
+  background: rgb(246 246 243 / 0.35);
+  backdrop-filter: blur(6px);
   animation: fade 0.28s ease;
 }
 
@@ -531,6 +618,30 @@ select {
   color: var(--soft);
 }
 
+@keyframes wave {
+  50% {
+    transform: translateY(-3.2vmax);
+  }
+}
+
+@keyframes swell {
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+@keyframes hue {
+  to {
+    filter: blur(10px) hue-rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  to {
+    background-position: 100% 0;
+  }
+}
+
 @keyframes breathe {
   50% {
     transform: scale(1.22);
@@ -568,10 +679,6 @@ select {
   .signin-grid {
     grid-template-columns: 1fr;
     gap: 32px;
-  }
-
-  .rooms {
-    grid-template-columns: 1fr;
   }
 }
 
