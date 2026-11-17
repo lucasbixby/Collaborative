@@ -2,7 +2,7 @@
 
 Knows nothing about operation contents; ordering and validation live in app.sync. One
 instance per server process, held in memory: who's connected doesn't survive a restart, though
-the operations they sent do (#19).
+the operations they sent do.
 """
 
 from fastapi import WebSocket

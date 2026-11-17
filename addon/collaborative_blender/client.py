@@ -256,7 +256,7 @@ def refusal() -> tuple[int, str] | None:
 
 
 def synced() -> bool:
-    """Whether the current socket has received the room's catch-up (#20). False while
+    """Whether the current socket has received the room's catch-up. False while
     connecting or reconnecting, and between connecting and the server's `synced`."""
     conn = _conn
     return (

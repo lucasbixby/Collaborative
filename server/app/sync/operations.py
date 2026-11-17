@@ -24,7 +24,7 @@ STRICT = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 Uuid = Annotated[
     str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ]
-# Capped at what a signed 64-bit database column holds (the log, #19), so an absurd value is
+# Capped at what a signed 64-bit database column holds (the log), so an absurd value is
 # rejected here as invalid rather than failing later as a database error.
 Lamport = Annotated[int, Field(ge=1, le=2**63 - 1)]
 Vec3 = tuple[float, float, float]
@@ -65,7 +65,7 @@ Rotation = Annotated[EulerRotation | FourValueRotation, Field(discriminator="mod
 
 
 class _OperationBase(BaseModel):
-    """Fields every operation carries (D-025)."""
+    """Fields every operation carries."""
 
     model_config = STRICT
     object: Uuid
@@ -152,7 +152,7 @@ Operation = Annotated[SetOperation | CreateOperation | DeleteOperation, Field(di
 
 
 class OpsMessage(BaseModel):
-    """A batch of operations, applied in list order (D-024)."""
+    """A batch of operations, applied in list order."""
 
     model_config = STRICT
     v: Literal[1]
@@ -168,7 +168,7 @@ class OpsMessage(BaseModel):
 
     @property
     def origin(self) -> str:
-        """The client that sent this message (every op carries the same one, #10)."""
+        """The client that sent this message (every op carries the same one)."""
         return self.ops[0].origin
 
 

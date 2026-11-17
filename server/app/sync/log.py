@@ -1,8 +1,5 @@
-"""Per-room append-only operation log (#19). Snapshot compaction comes with #20.
-
-Takes a session and plain values, with no FastAPI or WebSocket imports, so it can be tested
-alone and #20's catch-up can reuse it.
-"""
+"""Per-room append-only operation log. Takes a session and plain values, with no FastAPI or
+WebSocket imports, so it can be tested alone."""
 
 from datetime import UTC, datetime
 

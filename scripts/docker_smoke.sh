@@ -61,15 +61,13 @@ wait_healthy
 curl -fsS -m 2 http://localhost:8000/health >/dev/null || fail "/health isn't reachable from the host on port 8000"
 pass "/health answers on the published port"
 [[ "$(curl -fsS -m 2 http://localhost:8000/)" == *'<div id="root">'* ]] || fail "/ doesn't serve the web UI"
-pass "/ serves the web UI (#22)"
-[[ "$(curl -fsS -m 2 http://localhost:8000/join/anything)" == *'<div id="root">'* ]] || fail "/join/anything doesn't fall back to the app"
-pass "a client route (/join/anything) falls back to index.html"
+pass "/ serves the web UI"
 api_404="$(curl -sS -m 2 -o /dev/null -w '%{http_code} %{content_type}' http://localhost:8000/api/nope)"
 [[ "$api_404" == "404 application/json" ]] || fail "/api/nope gave $api_404, not a JSON 404"
 pass "an unknown /api route is still a JSON 404"
 # Not a pipe into grep -q: it quits at the first match, and pipefail then fails on the SIGPIPE.
 [[ "$(docker compose logs server)" == *COLLAB_SECRET_KEY* ]] || fail "no secret-key warning in the logs"
-pass "the default secret key is warned about"
+pass "the old placeholder secret key is warned about"
 
 # The smoke client runs in the container, signed in through COLLAB_TOKEN (empty: signed out).
 smoke_client() { docker compose exec -T -e COLLAB_TOKEN="$TOKEN" server python - "$@" < scripts/smoke_client.py; }

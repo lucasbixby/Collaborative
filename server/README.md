@@ -6,12 +6,9 @@ relative to where you start it:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --ws-max-size 1048576
 pytest
 ```
-
-After pulling #19, re-run the `pip install` line: async SQLAlchemy needs `greenlet`, which is a
-new dependency.
 
 ## Where the data lives
 
@@ -20,65 +17,72 @@ Every relayed operation is saved in a SQLite file, by default `server/data/colla
 `data/` is git-ignored. With WAL on, you'll also see `-wal` and `-shm` files next to it: they're
 part of the database, so copy or delete all three together.
 
-There's no migrations tool yet (D-067). `create_all` adds missing tables but never changes an
-existing one, so after a change to a table's columns, delete the file and start again.
+There's no migrations tool. At startup, missing tables are created and nullable columns added
+since the database was made are added to it; any other change to a table needs a fresh database.
+Uploaded project files are in `data/assets/` by content hash, and the generated signing key in
+`data/secret.key`.
 
 In Docker, the database is in `/srv/data`, on the `server-data` volume from `docker-compose.yml`.
 See "Run the server" in the [main README](../README.md).
 
-## Accounts, rooms and roles (#16–#18)
+## Accounts, rooms and roles
 
 Everything but `/health`, register and login needs a token (`Authorization: Bearer <token>`),
-from `POST /api/auth/login`, and the socket takes it in the same header. A room has to be
-created (`POST /api/rooms`) before anyone can join it; its creator is the owner, who invites
-editors and viewers with codes. The full API and the close codes (4401, 4403) are in
-`docs/protocol.md`.
+from `POST /api/auth/login`, and the socket takes it in the same header. A room is created with
+a password (`POST /api/rooms`); its creator is the host (role `owner`), and anyone signed in who
+knows the name and password joins as an editor (`POST /api/rooms/join`). The host can make
+someone a viewer, remove them, or delete the room. The full API and the close codes (4401,
+4403) are in `docs/protocol.md`.
 
-Passwords are hashed with the standard library's scrypt, and tokens are JWTs signed with
-`COLLAB_SECRET_KEY` (PyJWT), valid for `COLLAB_TOKEN_TTL_HOURS` (168). Each user's role in each
-room is in `room_members`, invite codes (hashed) in `invites`, and which user owns which client
-origin in `origin_owners`. After pulling #16–#18, re-run `pip install -e ".[dev]"` for PyJWT;
-the new tables are created at startup (D-067).
+Passwords, for accounts and rooms, are hashed with the standard library's scrypt. Tokens are
+JWTs valid for `COLLAB_TOKEN_TTL_HOURS` (168), signed with `COLLAB_SECRET_KEY`, or if that's
+unset with a key the server generates once and keeps in `COLLAB_SECRET_KEY_FILE`. Failed
+sign-ins and room joins are limited to `COLLAB_AUTH_ATTEMPTS` per `COLLAB_AUTH_WINDOW_SECONDS`
+for each client and name.
 
 `scripts/admin.py` works on the same database as the server, for setup, demos and tests:
 
 ```bash
 python3 scripts/admin.py create-user alice                # asks for the password
-python3 scripts/admin.py create-room demo --owner alice
+python3 scripts/admin.py create-room demo --owner alice --room-password "open sesame"
 python3 scripts/admin.py add-member demo bob --role viewer
 python3 scripts/admin.py token alice                      # prints a token, e.g. for ws_probe
 ```
 
 In Docker: `docker compose exec server python scripts/admin.py ...`.
 
-**Rooms from before #18.** A room's log is kept by its id, so the first person to create a room
-called `demo` gets whatever `demo` had before accounts existed.
+## Project files and saving
 
-## The web UI (#22)
+`PUT /api/rooms/{id}/file` (host only) stores the request body as the room's `.blend`, and
+`GET` returns it to any member. Content is kept by SHA-256 under `COLLAB_ASSET_DIR`, at most
+`COLLAB_MAX_FILE_BYTES` (512 MiB), and must start like a `.blend`. Replacing or deleting a
+room's file removes the old content unless another room still uses it.
 
-With `COLLAB_WEB_DIR` set to a built `web/dist`, the server also serves the web UI at `/`: a
-file that exists there is served as is, and any other path that isn't under `/api/` or `/ws/`
-gets `index.html`, so the app's own routes (`/rooms/demo`, `/join/<code>`) work on a reload.
-The Docker image builds the UI and sets it to `/srv/web`. Unset, as in local dev, the server is
-API-only and the UI runs on Vite's dev server (`cd web && npm run dev`), which proxies to :8000.
+A guest's save arrives on the socket as `save_request` and waits, in memory, for the host:
+`GET /api/rooms` lists it for the room's owners, and `POST …/save-requests/{id}` answers it.
+Approving sends `save` to the host's own Blender, so it's a `409` while the host has no Blender
+in the room. A request nobody answers expires after ten minutes.
 
-`GET /api/rooms/{id}/presence` lists who has a socket open in a room, for the UI's "Connected
-now"; it reads the relay's in-memory connections, so it's this process's view.
+## The web UI
 
-## Room state and snapshots (#20)
+With `COLLAB_WEB_DIR` set to a built `web/dist`, the server also serves the UI at `/` for a
+browser. The Docker image builds it and sets it to `/srv/web`. Unset, as in local dev, the
+server is API-only and the UI runs on Vite's dev server (`cd web && npm run dev`). The desktop
+app carries its own copy of the UI and only uses the API.
+
+## Room state and snapshots
 
 A client that connects is sent the room's current state first, so Blenders don't need to share a
 file. The state is the latest snapshot plus the log after it. A snapshot is written once a room's
 log has grown `COLLAB_SNAPSHOT_EVERY` operations (default 500) past the last one, into the
-`snapshots` table next to `operations`. The log itself is never trimmed. To look at a room:
+`snapshots` table next to `operations`, where only the newest two per room are kept. The log
+itself is never trimmed. To look at a room:
 
 ```bash
 H="Authorization: Bearer $(python3 scripts/admin.py token alice)"   # a member's token
 curl -H "$H" localhost:8000/api/rooms/demo/snapshot              # current state, as ops
 curl -H "$H" "localhost:8000/api/rooms/demo/operations?since=40" # log rows after seq 40
 ```
-
-After pulling #20, an existing database just gains the `snapshots` table at startup (D-067).
 
 ## Reading the log
 

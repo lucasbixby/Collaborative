@@ -1,4 +1,4 @@
-"""Out-of-band latency timing (#24): off unless COLLAB_TIMING names a JSONL file.
+"""Out-of-band latency timing: off unless COLLAB_TIMING names a JSONL file.
 
 Operations can't carry timestamps (the schema forbids extra fields), so each side records when an
 operation passed each stage, keyed by (origin, lamport, object), and scripts/latency_report.py

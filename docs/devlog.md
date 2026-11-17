@@ -26,10 +26,10 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 
 | | |
 |---|---|
-| Phase | Feature freeze (due 11/16); Prototype done 10/23 |
-| In progress | — |
+| Phase | Feature freeze (11/16) reached with the host / join flow rebuilt on a branch; Prototype done 10/23 |
+| In progress | Review and manual checks of #41–#44 (PR) |
 | Next up | #25 Demo prep |
-| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency, #20 Snapshots and catch-up, #16 Accounts and auth tokens, #18 Rooms REST API, #17 Per-room permissions, #21 Convergence tests, #22 Web UI |
+| Done | #1 Repository scaffold, #2 Add-on testing workflow, #3 Change-detection spike, #4 Stable object IDs, #5 Detect local transform changes, #6 Apply remote operations, #7 Operation format, #8 Lamport clock, #9 Last-writer-wins, #11 WebSocket relay, #12 WebSocket client, #13 Join / Leave room, #14 Prototype check, #15 Create / delete sync, #10 Origin validation, #19 Persist the operation log, #23 Server runs from one Docker command, #24 Measure sync latency, #20 Snapshots and catch-up, #16 Accounts and auth tokens, #18 Rooms REST API, #17 Per-room permissions, #21 Convergence tests, #22 Web UI. On the branch, awaiting review: #41 Audit, #42 Rooms by name + password with project files and save approval, #43 Add-on sessions, #44 Desktop app and redesign |
 | Loose ends | Adjust Last Operation spike item |
 
 ## Decision index
@@ -111,7 +111,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-073 | Healthcheck in the Dockerfile, using Python's urllib on `/health` | 11/03 | Active |
 | D-074 | `docker_smoke.sh` is its own Compose project, with its test client inside the container | 11/03 | Active |
 | D-075 | Dependencies install from `pyproject.toml` alone; `app` isn't installed as a package | 11/03 | Active |
-| D-076 | The default secret key gets a startup warning, not an error | 11/03 | Active |
+| D-076 | The default secret key gets a startup warning, not an error | 11/03 | Replaced by D-109 |
 | D-077 | Latency timing is out of band, in JSONL files, off by default | 11/03 | Active |
 | D-078 | End to end runs from the depsgraph handler to the setter on the receiver | 11/03 | Active |
 | D-079 | Across machines: round trip on one clock, with RTT/2 reported alongside a corrected estimate | 11/03 | Active |
@@ -120,7 +120,7 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-082 | A snapshot every 500 ops (`COLLAB_SNAPSHOT_EVERY`), as a cache over a log that's never trimmed | 11/05 | Active |
 | D-083 | One `asyncio.Lock` per room around catch-up and around save → forward | 11/05 | Active |
 | D-084 | The server pushes catch-up on every connection, as plain `ops` then `synced`; no request message | 11/05 | Active |
-| D-085 | Merge on join: on a Join's first `synced`, offer every local mesh the catch-up didn't mention | 11/05 | Active |
+| D-085 | Merge on join: on a Join's first `synced`, offer every local mesh the catch-up didn't mention | 11/05 | Active (shared files no longer duplicate: D-106) |
 | D-086 | Catch-up batches carry one origin each and stay under 64 KiB | 11/05 | Active |
 | D-087 | `client.synced()` sits beside `status()`; inbox entries carry their socket's generation | 11/05 | Active |
 | D-088 | Handlers never await the database directly: shielded tasks the app tracks, snapshots counted in memory and written in the background, shutdown ends handlers and that work before disposing the engine | 11/09 | Active |
@@ -128,16 +128,29 @@ is reversed, add a new decision that says so and mark the old one in the index; 
 | D-090 | Login tokens are PyJWT HS256 with `sub` and `exp`, a week by default; no revocation | 11/09 | Active |
 | D-091 | The socket's token comes only in the `Authorization` header; accept, then close 4401 / 4403 before catch-up; the add-on stops retrying on either | 11/09 | Active |
 | D-092 | Rooms are created before they're joined; roles live only in `room_members`; ids stay human-readable | 11/09 | Active |
-| D-093 | Invite codes: shown once, stored as SHA-256, usable by anyone any number of times until they expire (24 h default) or are revoked; joining never lowers a role | 11/09 | Active |
+| D-093 | Invite codes: shown once, stored as SHA-256, usable by anyone any number of times until they expire (24 h default) or are revoked; joining never lowers a role | 11/09 | Replaced by D-104 |
 | D-094 | An origin belongs to the first user who sends as it, kept in the database; takeover only by that user (closes D-063) | 11/09 | Active |
 | D-095 | Membership changes reach open sockets at once: a removal closes with 4403, a role change applies from the next message | 11/09 | Active |
 | D-096 | Convergence is checked against a reference client written from the protocol rules, separate from `RoomState` | 11/09 | Active |
 | D-097 | One vector file, `tests/vectors/convergence.json`, generated by the server's tests and replayed through the add-on's real `apply_message` | 11/09 | Active |
 | D-098 | 300 fixed seeds in CI, more with `COLLAB_CONVERGENCE_SEEDS`; failures shrink to a replayable trace | 11/09 | Active |
 | D-099 | The web UI is built in the server's image and served by FastAPI at `/`, with an SPA fallback that never covers `/api` or `/ws` | 11/09 | Active |
-| D-100 | Presence is a REST endpoint over the relay's in-memory connections, polled every 3 s while the room page is visible | 11/09 | Active |
-| D-101 | The web UI keeps its token in sessionStorage, not localStorage | 11/09 | Active |
-| D-102 | No router or UI library: a small History API router and plain CSS | 11/09 | Active |
+| D-100 | Presence is a REST endpoint over the relay's in-memory connections, polled every 3 s while the room page is visible | 11/09 | Folded into the room list by D-111 |
+| D-101 | The web UI keeps its token in sessionStorage, not localStorage | 11/09 | Active in a browser; the desktop app keeps it (D-103) |
+| D-102 | No router or UI library: a small History API router and plain CSS | 11/09 | Active, minus the router (one screen now) |
+| D-103 | "Collaborative" is a desktop app (Electron) around the web UI, with a narrow bridge to the computer | 11/16 | Active |
+| D-104 | Rooms are joined by name + password; invite links are removed | 11/16 | Active |
+| D-105 | A room carries its project file: the host uploads the `.blend`, members download it, stored by content hash | 11/16 | Active |
+| D-106 | Objects in a shared file get IDs derived from the room and their names, once per file | 11/16 | Active |
+| D-107 | Saving belongs to the host: a guest's save is a request the host approves in the app, and the host's Blender saves | 11/16 | Active |
+| D-108 | The add-on's session comes from the environment the app sets; no sign-in or room field in Blender | 11/16 | Active |
+| D-109 | With no `COLLAB_SECRET_KEY`, the server generates a signing key and keeps it | 11/16 | Active |
+| D-110 | Failed sign-ins and room joins, and registrations, are rate limited in memory | 11/16 | Active |
+| D-111 | Presence and save requests ride on the room list the app already polls | 11/16 | Active |
+| D-112 | Only the newest two snapshots per room are kept | 11/16 | Active |
+| D-113 | A flush's `set`s and `delete`s are split across messages at the size limit | 11/16 | Active |
+| D-114 | CORS allows any origin, without credentials | 11/16 | Active |
+| D-115 | The UI's look: a ruled poster grid in ink on paper, with a generated dot field per room | 11/16 | Active |
 
 ## Log
 
@@ -1285,3 +1298,55 @@ serving the built app.
   scope. It's per process, as everything in the relay is.
 - There's no leave-room button for non-owners yet (`DELETE …/members/<me>` exists).
 
+
+### 2026-11-16 · Audit, and the host / join flow rebuilt (#41, #42, #43, #44)
+
+Lucas asked for a full audit and a simpler way in: open the app, log in, **Host room** from a
+`.blend` with a name and password or **Join room** with them, see your rooms and who's in each,
+**Launch Blender**, and have a guest's save go to the host for approval. That flow needed three
+things the project didn't have: something running on each computer (a page can't start Blender),
+the host's file travelling to joiners, and a message path for saves. Done on branch
+`feat/desktop-host-join-flow`, as one PR, since the freeze was today and the demo is 11/23:
+`main` is untouched until it's reviewed. Four choices were Lucas's, asked up front: a desktop
+app, one shared server, "approve" saves the host's file, and invites removed with roles kept.
+
+| Decision | Why |
+|---|---|
+| D-103: The app is Electron around the same React UI, loaded from the app's own files over an `app://` protocol. The page is sandboxed with no Node and reaches the computer only through `window.collab` (preload): file dialogs, upload of a file a dialog returned (by handle), launch, the server address. Blender's location is only set from a dialog. | "Opens the software" and "launch Blender" need a program on the computer. Keeping the UI a web app means the server can still serve it to a browser, and it can be tested in jsdom. The bridge is narrow so that a bug in the page, or a hostile server's data, can't become "run this program" or "read this path". Rejected: a local Python launcher with the UI in a browser tab (no new stack, but not an app), and Tauri (needs Rust). |
+| D-104: A room has a password (scrypt, like accounts). `POST /api/rooms/join` with name + password makes an editor; a wrong name and a wrong password get the same `403` and take as long. Invite links, their table, API, UI and tests are removed. Roles stay: the host can make someone a viewer or remove them. | It's the flow asked for, and one fewer concept. A password is weaker than a 128-bit invite code, which is why joins are rate limited (D-110). Roles stay because "only permitted users can send operations" is a success criterion. |
+| D-105: `PUT /api/rooms/{id}/file` streams the host's `.blend` into `LocalAssetStore` (the `storage/` interface from D-005, now real): SHA-256 as the name, a size cap (512 MiB), a check that it starts like a `.blend`, written to a temp file and renamed. Members `GET` it. The room row holds the hash, name and size. Old content is deleted once no room uses it. | "User B launches Blender with the host's file" means the file has to travel. It also fixes what operations never could: materials, lights, cameras and large meshes now reach joiners, as of the host's last save. By hash, so the app can tell whether its copy is current without downloading. |
+| D-106: On joining, an object with no `collab_id` gets `uuid5(room/name)`; the scene is then marked, and marked scenes never get derived IDs again. | Two people opening the same file must agree on object IDs, and the file may never have been in a room. Names are unique in a file, so a derived ID needs no preparation step and no extra Blender run at room creation. The mark matters: without it, a new object named like a deleted one would inherit its tombstoned ID and be deleted on join. This also ends the `Cube` / `Cube.001` duplicate from merge on join for shared files. Rejected: stamping IDs by running Blender headless when the room is created (slow, and one more thing to fail). Known gap: in a file that was never saved in a session, deleting an object in the room and recreating its name outside the room still collides. |
+| D-107: The host's `save_post` uploads the file. A guest's `save_post` sends `save_request`; the server holds it in memory (one per user per room, ten minutes); the host's app shows a pop-up and a system notification; Approve makes the server send `save` to the host's own Blender, which runs `save_mainfile` and so uploads. Deny, or no Blender of the host's in the room (`409`), saves nothing. The guest's panel shows the outcome. | Blender can't veto a save, and the guest's file is only a local copy anyway, so the request is about the host's file, which is what "save the project" means. Routing it through the host's Blender keeps one writer for the real file. In memory because a save request is only meaningful for minutes. |
+| D-108: `session.py` reads `COLLAB_SERVER_URL`, `COLLAB_TOKEN`, `COLLAB_ROOM`, `COLLAB_USERNAME`, `COLLAB_ROLE`, and removes the token from the environment. `register()` schedules the join. `preferences.py`, `account.py` and the room field are deleted. The app starts Blender with `--python desktop/blender/launch.py`, which imports the add-on from the app's copy for that session. A viewer's add-on doesn't start detection. | Nothing to install, type or keep in sync between the app and Blender. Environment, not arguments: other programs can read a process's arguments. Nothing is written to Blender's preferences, which also removes the plain-text token in `userpref.blend` noted on 11/09. Viewers no longer drift and log an error per edit. |
+| D-109: `COLLAB_SECRET_KEY` defaults to empty; the server then creates `secret.key` (48 random bytes, mode 0600, created exclusively) in its data folder and uses it. The old public placeholder still earns the loud warning if someone sets it. | The audit's most serious finding: a default `docker compose up` signed tokens with a key printed in this repository, so anyone could sign in as anyone. A warning nobody reads isn't a control. Replaces D-076. |
+| D-110: `RateLimiter` counts failures in a sliding window: 10 per 5 minutes for a login (per client address and name) and for room joins (per client and per user), then `429` with `Retry-After`; 30 registrations per window per client. | Noted as open on 11/09, and a room password makes it necessary. In memory is enough with one worker. Behind a proxy the client address is the proxy's; that needs `X-Forwarded-For` handling if it's ever deployed that way. |
+| D-111: `GET /api/rooms` returns, per room, `file`, `online` and (for owners) `save_requests`. `GET …/presence` is removed. | The dashboard needs all of it for every room, so one poll every 3 s replaces a request per room. Extends D-100. |
+| D-112: `write_snapshot` deletes all but the newest two snapshots of the room. | Each snapshot is the whole state and only the latest is ever read, so the table grew by a full copy every 500 operations forever. The log, the history that is a success criterion, is still never trimmed. Amends D-082. |
+| D-113: `detect.flush` sends its `set`s and `delete`s in as many messages as the 64 KiB limit needs. | Open since 11/03: an oversized batch was rejected whole and the sender had already tombstoned those IDs, so deleting a few hundred objects at once diverged. Order is all that matters, and it survives a split. |
+| D-114: CORS `allow_origins=["*"]`, `allow_credentials=False`. | The desktop app's page has the origin `app://collaborative`. Requests are authorized by a Bearer token the caller must already hold, never cookies, so letting any origin call the API gives another site nothing. |
+| D-115: The UI is a ruled grid in black on off-white, Helvetica Neue, parenthesised captions, and for each room a field of soft ringed dots generated from its name. Motion only where it answers something: buttons sink and fill, dialogs rise, a few dots breathe, presence dots pulse. Reduced motion is respected. | From Lucas's references (a Le Corbusier poster, a typographic portfolio, grids of chromatography-like spots). The dot field gives every room a face that is always the same, and is the one place colour appears. |
+
+**Audit findings, and what happened to each.**
+- *Security.* Fixed: the public default signing key (D-109); no rate limiting (D-110); `allow_credentials=True` in CORS (D-114); WebSocket frames up to uvicorn's 16 MiB default were buffered before the 64 KiB check (`--ws-max-size 1048576`); the add-on token saved in `userpref.blend` (D-108). New surface handled: upload size, type and name; downloads verified by hash; a guest's file opened with `--disable-autoexec`; every launch request checked in the main process. Still open: plain HTTP unless behind HTTPS; no token revocation; open registration; a deleted room's name can be reused by anyone.
+- *Bugs.* Fixed: a binary WebSocket frame raised `KeyError` in the handler and dropped the connection, now an `error` reply; oversized batches (D-113); an operation in flight for a removed member or deleted room is now dropped under the room lock. Found by the new tests while building: the upload used its temp copy's name; the desktop page asked the server who was signed in before it knew the server's address.
+- *Unused code.* Removed: `sync/clock.py` (an empty stub the README described as real), the `storage/local.py` TODO (implemented), `permissions.higher` and `Role.rank`, the clipboard "Apply" dev aid and its panel section, the invite model and routes, the web router, `links.ts`, `CopyButton`, the `/presence` route, `api.health`, the commented history in READMEs ("after pulling #19…").
+- *Comments.* Module docstrings that retold how the code came to be were cut to what the code does and why; issue and decision numbers are gone from code comments (they live here).
+- *Scalability.* Fixed: snapshot growth (D-112); a room list that needed a request per room (D-111). Not changed, and worth knowing: one worker by design (rooms, origins, save requests and limits are in memory); the room lock is held while catching up a slow client; `apply_message` rescans the scene per message, so joining N objects is O(N²); `origin_owners` gains a row per Join; the log is never compacted.
+
+**Details:**
+- Server: new `api/files.py`, `auth/ratelimit.py`, `realtime/saves.py`, `storage/local.py`; changed `api/rooms.py`, `api/auth.py`, `realtime/websocket.py`, `auth/tokens.py`, `db/models.py`, `db/session.py` (adds missing nullable columns at startup, so an existing database keeps working; the old `invites` table is simply left behind), `sync/state.py`, `config.py`, `main.py`. `admin.py create-room` takes `--room-password`.
+- Add-on: new `session.py`, `saving.py`; changed `ids.py`, `operators.py`, `panel.py`, `client.py` (`on_control`, `send_control`), `detect.py`; deleted `preferences.py`, `account.py`.
+- Web: `pages/Dashboard.tsx`, `pages/SignInPage.tsx`, `components/` (`HostRoomDialog`, `JoinRoomDialog`, `RoomDialog`, `SaveRequestDialog`, `SettingsDialog`, `Dialog`, `DotField`), `platform.ts` (the bridge's types), `boot.ts`. Built with `base: './'` so the app can load it from disk.
+- Desktop: `desktop/` (`main.cjs`, `preload.cjs`, `lib/`, `blender/launch.py`), Electron 38.2.2 as its only dependency. `npm start` builds the UI and opens the app. CI gained a `desktop` job.
+- Runs: server 816 passed, 1 xfailed; add-on 200 passed, 2 xfailed; web 27 passed, lint clean, build passes; desktop 14 passed; `ruff` clean on server, add-on and scripts.
+- **End to end, outside the suites.** (1) The real Electron app under a virtual display against a real server: logged in, opened a joined room, pressed Launch Blender; with a stand-in for Blender it downloaded the file to the cache and started it with `--disable-autoexec`, the launch script and the room in the environment. (2) A real server and two headless Blender 5.2.2 processes started through `desktop/blender/launch.py` with the app's environment, host on its own `.blend` and guest on the downloaded copy: both derived the same IDs; the host's move reached the guest; the guest added a cone, moved the sphere and saved; the request appeared in the host's room list; approving it over REST made the host's Blender save and upload; the server's hash then equalled the host's file on disk, which contained the guest's cone.
+
+**Open / follow-up:**
+- **Lucas, by hand, before merging:** the app on your Mac with real Blender windows (launch as host and as guest on a second account or machine, edit both ways, guest save → Approve, host save, relaunch the guest and check it gets the saved file); the look of the UI on your display; a second computer on the LAN.
+- Not verified here: `docker_smoke.sh` and the image build (no Docker in this workspace; the script was updated for room passwords and CI runs it); real GUI Blender; macOS and Windows launch paths beyond unit tests.
+- No installer: the app runs with `npm start` (see `desktop/README.md` for what a packaged build must ship unpacked).
+- Changes to non-mesh things reach others only through the host's save and their next launch; a guest connected the whole time doesn't see a new light until then.
+- A host who opens the room on a computer that doesn't have the file gets a downloaded copy, and their saves there update the server's copy but no "real" file. Re-linking a room to a local file needs a small UI.
+- Existing databases: `docker compose down -v` isn't needed, but rooms made before today have no password, so they can only be joined through `admin.py add-member`.
+- The app's token is in the page's localStorage (D-101's trade, now for the desktop app). The OS keychain through Electron's `safeStorage` would be better.
+- Still open from before: same-name renames diverge; undo can delete other people's objects; Adjust Last Operation.

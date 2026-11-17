@@ -5,14 +5,19 @@ Targets **Blender 5.2 LTS** (bundled Python 3.13).
 | File | Role |
 |---|---|
 | `__init__.py` | `bl_info`, register / unregister |
-| `preferences.py` | Server URL, Sign in / Sign out (keeps a token, never the password) |
-| `account.py` | `POST /api/auth/login` with urllib, for Sign in |
-| `panel.py`, `operators.py` | Sidebar UI: join / leave room, status |
-| `detect.py` | Detect local changes → operations (the first spike) |
+| `session.py` | The room this Blender was launched into: server, token, room, role, from the environment |
+| `operators.py`, `panel.py` | Joining (by itself, at startup) and leaving; the sidebar status |
+| `detect.py` | Detect local changes → operations |
 | `apply.py` | Apply remote operations, guarded against echo loops |
-| `client.py` | WebSocket on a background thread, queue to the main thread |
+| `ordering.py` | Lamport clock, last-writer-wins versions, tombstones |
+| `ids.py` | Stable object IDs, shared by everyone who opens the room's file |
+| `saving.py` | Host save → upload the file; guest save → ask the host |
+| `client.py` | WebSocket on background threads, a queue to the main thread |
 | `log.py` | `log(...)`: terminal output tagged with the client name (A / B) |
-| `timing.py` | Latency timing, off unless `COLLAB_TIMING` is set (#24, `docs/latency.md`) |
+| `timing.py` | Latency timing, off unless `COLLAB_TIMING` is set (`docs/latency.md`) |
+
+People never install this by hand: the Collaborative app starts Blender with
+`desktop/blender/launch.py`, which loads the add-on for that session.
 
 ## Development setup (once)
 
@@ -54,10 +59,10 @@ work (`bpy.ops.transform.translate(...)`, `bpy.ops.object.duplicate()`); interac
 mouse drags don't exist, so cover those by hand (below).
 
 `tests/test_blender_assumptions.py` holds facts about Blender that change detection
-depends on. Add to it as the spike finds more.
+depends on.
 
 `tests/test_convergence_vectors.py` feeds the shared scenarios in `tests/vectors/convergence.json`
-(repo root, written by the server's convergence test, #21) through the real `apply_message` and
+(repo root, written by the server's convergence test) through the real `apply_message` and
 checks the scene matches the reference model's. A scenario marked `known_divergence` is a
 strict xfail: today that's two objects renamed to the same name (Blender adds `.001`).
 
@@ -83,50 +88,37 @@ addon/scripts/blender.sh --two
 Starts clients **A** and **B** sharing one terminal; every `log(...)` line says which
 client wrote it. Ctrl+C closes both.
 
-**Testing sync by hand:** start the server (`uvicorn app.main:app`, or `docker compose up`;
-see `server/README.md`). Since #16–#18 you need accounts and a room first: see "First run" in
-the [main README](../README.md). The short way, from `server/`:
+**Testing sync by hand:** the normal way is the app (`desktop/`): two accounts, one hosts a
+room, the other joins, both press Launch Blender. Without the app, give Blender the session
+the app would, from `server/`:
 
 ```bash
 python3 scripts/admin.py create-user alice && python3 scripts/admin.py create-user bob
-python3 scripts/admin.py create-room demo --owner alice
+python3 scripts/admin.py create-room demo --owner alice --room-password "open sesame"
 python3 scripts/admin.py add-member demo bob --role editor
+COLLAB_ROOM=demo COLLAB_ROLE=owner  COLLAB_USERNAME=alice COLLAB_TOKEN=$(python3 scripts/admin.py token alice) ../addon/scripts/blender.sh shared.blend &
+COLLAB_ROOM=demo COLLAB_ROLE=editor COLLAB_USERNAME=bob   COLLAB_TOKEN=$(python3 scripts/admin.py token bob) COLLAB_CLIENT=B ../addon/scripts/blender.sh shared.blend
 ```
 
-Then in each Blender, Edit > Preferences > Add-ons > Collaborative > **Sign in** (A as alice, B
-as bob), and **Join room** in both with the same Room ID. A and B share one preferences file, so
-each signs in for itself after starting; if preferences auto-save is on, whichever quits last
-leaves its token saved for next time.
+(`COLLAB_SERVER_URL` defaults to `ws://localhost:8000`.) Each Blender joins by itself.
 
-- **Refusals.** Not signed in: the panel says "Sign in first". Not a member: "No access to
-  demo". The client doesn't retry either (a 4401 / 4403 close, `docs/protocol.md`); sign in, or
-  get invited, then press Join again.
-- **Viewers** see everything live but their own edits stay local: the server answers each with
-  an `error` ("viewers can't edit"), which is logged in the terminal.
-
-The two Blenders don't need the same file (#20):
-
+- **Same file, same IDs.** On joining, every object without an ID gets one derived from the
+  room and the object's name, so two Blenders that open the same file agree on which object is
+  which. This happens once per file; an object added later gets a random ID.
 - **Joining catches up.** The server first sends the room's current state as ordinary
-  operations, and the panel shows "Catching up…" until it's in. A Blender with an empty scene
-  ends up with every object in the room, and one that was away gets what it missed, deletes
-  included.
+  operations, and the panel shows "Catching up…" until it's in.
 - **Merge on join.** Once caught up, a client offers the room every local mesh the room doesn't
-  know yet, as a normal `create`. So two Blenders joining with the default scene end up with
-  both cubes (the second one arrives as `Cube.001`). Cameras, lights and other non-meshes stay
-  local (`not synced yet`).
-- **Only on Join.** A reconnect after a network drop doesn't offer anything again: edits made
-  meanwhile are already queued and go out normally.
+  know yet, as a normal `create`. Cameras, lights and other non-meshes travel in the file, not
+  as operations (`not synced yet` in the log).
+- **Saving.** The host's save uploads the file. Anyone else's save writes their local copy and
+  asks the host, and the panel shows how that went.
+- **Viewers** apply what they receive and send nothing.
+- **Refusals.** A 4401 / 4403 close stops the client (`docs/protocol.md`); the panel says why,
+  and **Rejoin room** tries again.
 - **Edits made while not in a room aren't sent.** If you move an object the room already knows
-  while you're out of the room, then rejoin, that move stays on your screen only, until someone
-  edits the object again.
+  while you're out of the room, the room's value replaces yours when you rejoin.
 
-Opening the same saved `.blend` in both still works: objects whose IDs the room already knows
-aren't offered again. `server/scripts/ws_probe.py` can join the same room from a terminal to
-watch the traffic.
-
-**Apply from clipboard** (Collaborative panel) is still there as a dev aid: paste a
-logged batch (or a hand-written one) and apply it without a server, e.g. to check
-last-writer-wins (#8 / #9) by hand.
+`server/scripts/ws_probe.py` can join the same room from a terminal to watch the traffic.
 
 ## VS Code tasks
 
@@ -135,6 +127,6 @@ or two Blender clients.
 
 ## Dependencies at runtime
 
-Blender's Python can't `pip install` cleanly for end users, so any WebSocket library
-has to be vendored into this folder (or the stdlib used). Decide during the spike.
-The packages in `requirements-dev.txt` are for development only and never ship.
+Blender's Python can't `pip install` for end users, so the one runtime dependency,
+`websocket-client`, is vendored in `collaborative_blender/vendor/`. The packages in
+`requirements-dev.txt` are for development only and never ship.

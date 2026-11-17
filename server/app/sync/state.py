@@ -88,12 +88,12 @@ async def write_snapshot(session: AsyncSession, room_id: str) -> Snapshot:
 
 class SnapshotScheduler:
     """Counts each room's appends since its last snapshot, in memory, and starts a snapshot
-    task once the count reaches `settings.snapshot_every` (D-088).
+    task once the count reaches `settings.snapshot_every`.
 
     A room's count is seeded from the database once, by `seed`, which catch-up calls before
     the room's first append in this process. A room that was never seeded counts from 0, which
     only delays its next snapshot. At most one snapshot per room runs at a time. A snapshot that
-    fails, or is cancelled at shutdown, is just skipped: it's a cache over the log (D-082).
+    fails, or is cancelled at shutdown, is just skipped: it's a cache over the log.
     """
 
     def __init__(

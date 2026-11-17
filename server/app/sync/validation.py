@@ -1,8 +1,8 @@
-"""Who may send as which `origin` (protocol rule 4, #10). The schema and size checks are in
+"""Who may send as which `origin` (protocol rule 4). The schema and size checks are in
 operations.py; this is the part that needs to know about connections, but not about sockets.
 
-Since #17 an origin belongs to a user: the first user to send as it owns it, and no other user
-can send as it again (D-063 closed). The owner is kept in the database (OriginOwner), so a
+An origin belongs to a user: the first user to send as it owns it, and no other user can send
+as it again. The owner is kept in the database (OriginOwner), so a
 restart doesn't free it; the relay looks it up there the first time it sees an origin and tells
 this registry with `set_owner`. Within one user, the old rules still hold: the newest connection
 to claim an origin holds it, which is how the add-on's reconnect takes it back.
@@ -19,7 +19,7 @@ class OriginRegistry:
     The first valid message on a connection pins that connection to its origin for good. An
     origin has one holder per room at a time, and the newest connection to claim it wins, if
     it's the owner's: the add-on reuses its origin when it reconnects, and the server can't
-    tell a dead socket from a live one until keepalive notices, up to ~40 s later (D-062). The
+    tell a dead socket from a live one until keepalive notices, up to ~40 s later. The
     connection that lost it stays pinned to that origin, so it can't claim it back or move to
     another. A different user can never claim it.
 
