@@ -28,13 +28,12 @@ export interface LaunchRequest {
 
 export interface DesktopBridge {
   getSettings(): Promise<DesktopSettings>
-  saveSettings(settings: { serverUrl: string; blenderPath: string }): Promise<DesktopSettings>
+  saveSettings(settings: { serverUrl: string }): Promise<DesktopSettings>
   pickBlendFile(): Promise<PickedFile | null>
+  /** Asks for Blender's location and saves it. Null if cancelled or it isn't a program. */
   pickBlender(): Promise<string | null>
   /** Uploads a picked file as the room's project and remembers it as this room's local file. */
   hostFile(request: { serverUrl: string; token: string; roomId: string; fileId: string }): Promise<void>
-  /** Whether this computer has the host's own copy of the room's file. */
-  hasHostFile(roomId: string): Promise<boolean>
   launch(request: LaunchRequest): Promise<void>
   forgetRoom(roomId: string): Promise<void>
   notify(title: string, body: string): void

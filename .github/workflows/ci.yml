@@ -8,7 +8,7 @@ on:
 jobs:
   server:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # a hang fails the job instead of running for hours (#20)
+    timeout-minutes: 10  # a hang fails the job instead of running for hours
     defaults:
       run:
         working-directory: server
@@ -23,14 +23,14 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # a hang fails the job instead of running for hours (#20)
+    timeout-minutes: 10  # a hang fails the job instead of running for hours
     steps:
       - uses: actions/checkout@v4
       - run: scripts/docker_smoke.sh
 
   addon:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # a hang fails the job instead of running for hours (#20)
+    timeout-minutes: 10  # a hang fails the job instead of running for hours
     defaults:
       run:
         working-directory: addon
@@ -52,7 +52,7 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # a hang fails the job instead of running for hours (#20)
+    timeout-minutes: 10  # a hang fails the job instead of running for hours
     defaults:
       run:
         working-directory: web
@@ -67,3 +67,17 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The tests cover the app's own logic and need no Electron, so nothing is installed.
+      - run: npm test

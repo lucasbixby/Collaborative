@@ -19,7 +19,7 @@ export function SettingsDialog({ onClose, onSaved }: { onClose: () => void; onSa
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    onSaved(await desktop!.saveSettings({ serverUrl: server.trim(), blenderPath: blender }))
+    onSaved(await desktop!.saveSettings({ serverUrl: server.trim() }))
   }
 
   async function browse() {

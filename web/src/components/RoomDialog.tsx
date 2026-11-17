@@ -16,6 +16,7 @@ export function RoomDialog({ room, onClose, onChanged }: { room: Room; onClose: 
   const [members, setMembers] = useState<Member[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<string | null>(null)
+  const [launched, setLaunched] = useState(false)
   const [confirming, setConfirming] = useState<string | null>(null)
   const host = room.role === 'owner'
   const online = room.online.length
@@ -31,6 +32,7 @@ export function RoomDialog({ room, onClose, onChanged }: { room: Room; onClose: 
 
   async function launch() {
     setError(null)
+    setLaunched(false)
     setProgress('Getting ready…')
     try {
       await desktop!.launch({
@@ -42,7 +44,8 @@ export function RoomDialog({ room, onClose, onChanged }: { room: Room; onClose: 
         fileHash: room.file!.hash,
         fileName: room.file!.name,
       })
-      setProgress('Blender is opening in this room.')
+      setLaunched(true)
+      setProgress(null)
       onChanged()
     } catch (caught) {
       setProgress(null)
@@ -96,9 +99,9 @@ export function RoomDialog({ room, onClose, onChanged }: { room: Room; onClose: 
       ) : (
         <p className="hint">Open this room in the Collaborative desktop app to launch Blender.</p>
       )}
-      {progress && (
+      {(progress || launched) && (
         <p className="progress" role="status">
-          {progress}
+          {progress ?? 'Blender is opening in this room.'}
         </p>
       )}
       {room.role === 'viewer' && <p className="hint">You're viewing: you see every edit, and yours stay on your computer.</p>}

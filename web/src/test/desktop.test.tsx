@@ -11,7 +11,6 @@ const bridge = {
   pickBlendFile: vi.fn(async () => ({ id: 'file-1', name: 'scene.blend', size: 3 * 1024 * 1024 })),
   pickBlender: vi.fn(async () => null),
   hostFile: vi.fn(async () => {}),
-  hasHostFile: vi.fn(async () => true),
   launch: vi.fn(async () => {}),
   forgetRoom: vi.fn(async () => {}),
   notify: vi.fn(),
@@ -140,6 +139,6 @@ describe('in the desktop app', () => {
     fireEvent.change(settings.getByLabelText('Server address'), { target: { value: ' http://10.0.0.5:8000 ' } })
     fireEvent.click(settings.getByRole('button', { name: 'Save settings' }))
 
-    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith({ serverUrl: 'http://10.0.0.5:8000', blenderPath: '' }))
+    await waitFor(() => expect(bridge.saveSettings).toHaveBeenCalledWith({ serverUrl: 'http://10.0.0.5:8000' }))
   })
 })
