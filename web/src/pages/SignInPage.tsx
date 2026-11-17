@@ -1,19 +1,19 @@
-// Sign in, or register and then sign in, on one form. The server's own messages are shown as
-// they come ("wrong username or password", "that username is taken", the validation rules).
+// Log in, or create an account and then log in, on one form. The server's own messages are
+// shown as they come.
 import { useState, type FormEvent } from 'react'
 
 import { api, ApiError } from '../api/client'
-import { ErrorMessage } from '../components/ErrorMessage'
 import { useAuth } from '../auth'
+import { ErrorMessage } from '../components/Dialog'
+import { DotField } from '../components/DotField'
 
-export function SignInPage({ intro }: { intro?: string }) {
+export function SignInPage({ onSettings }: { onSettings?: () => void }) {
   const { signIn } = useAuth()
-  const [mode, setMode] = useState<'signin' | 'register'>('signin')
+  const [registering, setRegistering] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const registering = mode === 'register'
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -29,51 +29,65 @@ export function SignInPage({ intro }: { intro?: string }) {
   }
 
   return (
-    <section className="card narrow">
-      <h1>{registering ? 'Create an account' : 'Sign in'}</h1>
-      {intro && <p>{intro}</p>}
-      <form onSubmit={submit}>
-        <label>
-          Username
-          <input
-            name="username"
-            autoComplete="username"
-            required
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-          />
-        </label>
-        {registering && <p className="hint">3–32 letters, digits, ".", "_" or "-".</p>}
-        <label>
-          Password
-          <input
-            name="password"
-            type="password"
-            autoComplete={registering ? 'new-password' : 'current-password'}
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </label>
-        {registering && <p className="hint">At least 8 characters.</p>}
-        <ErrorMessage error={error} />
-        <button type="submit" disabled={busy}>
-          {registering ? 'Create account' : 'Sign in'}
-        </button>
-      </form>
-      <p>
-        {registering ? 'Already have an account? ' : 'New here? '}
-        <button
-          type="button"
-          className="link"
-          onClick={() => {
-            setMode(registering ? 'signin' : 'register')
-            setError(null)
-          }}
-        >
-          {registering ? 'Sign in' : 'Create an account'}
-        </button>
-      </p>
-    </section>
+    <div className="signin">
+      <h1 className="wordmark" aria-label="Collaborative">
+        Collaborative
+      </h1>
+      <div className="signin-grid">
+        <div className="signin-art">
+          <DotField name={registering ? 'new here' : 'welcome back'} columns={10} rows={7} />
+          <p className="caption">( One Blender scene, edited by several people at once )</p>
+        </div>
+        <form className="signin-form" onSubmit={submit}>
+          <h2>{registering ? 'Create an account' : 'Log in'}</h2>
+          <label>
+            Username
+            <input
+              name="username"
+              autoComplete="username"
+              autoFocus
+              required
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          </label>
+          {registering && <p className="hint">3–32 letters, digits, ".", "_" or "-".</p>}
+          <label>
+            Password
+            <input
+              name="password"
+              type="password"
+              autoComplete={registering ? 'new-password' : 'current-password'}
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          {registering && <p className="hint">At least 8 characters.</p>}
+          <ErrorMessage error={error} />
+          <button type="submit" className="primary" disabled={busy}>
+            {registering ? 'Create account' : 'Log in'}
+          </button>
+          <p className="switch">
+            {registering ? 'Already have an account?' : 'New here?'}{' '}
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                setRegistering(!registering)
+                setError(null)
+              }}
+            >
+              {registering ? 'Log in' : 'Create an account'}
+            </button>
+          </p>
+          {onSettings && (
+            <button type="button" className="link" onClick={onSettings}>
+              Server settings
+            </button>
+          )}
+        </form>
+      </div>
+    </div>
   )
 }

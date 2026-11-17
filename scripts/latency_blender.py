@@ -7,9 +7,9 @@ real add-on, on Blender's own timers. Files in LATENCY_SYNC_DIR keep the process
 import json
 import math
 import os
-import sys
 import pathlib
 import random
+import sys
 import time
 import traceback
 

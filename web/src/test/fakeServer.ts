@@ -2,7 +2,8 @@
 // body, and every call is recorded. No real server, and no network.
 import { vi } from 'vitest'
 
-type Reply = { status: number; body?: unknown } | ((request: Recorded) => { status: number; body?: unknown })
+type Answer = { status: number; body?: unknown }
+type Reply = Answer | ((request: Recorded) => Answer)
 
 export interface Recorded {
   method: string
@@ -18,7 +19,7 @@ export function fakeServer(routes: Record<string, Reply>) {
     const recorded: Recorded = {
       method: init.method ?? 'GET',
       path: url,
-      body: init.body ? JSON.parse(init.body as string) : undefined,
+      body: typeof init.body === 'string' ? JSON.parse(init.body) : init.body,
       authorization: headers.Authorization ?? null,
     }
     calls.push(recorded)
@@ -32,9 +33,22 @@ export function fakeServer(routes: Record<string, Reply>) {
     })
   })
   vi.stubGlobal('fetch', fetch)
-  return { calls }
+  return { calls, routes }
 }
 
 export const ALICE = { id: 1, username: 'alice', created_at: '2026-11-09T12:00:00Z' }
 
 export const signedIn = (token = 'tok-alice') => window.sessionStorage.setItem('collab.token', token)
+
+export function room(overrides: Record<string, unknown> = {}) {
+  return {
+    room_id: 'studio',
+    role: 'owner',
+    host: 'alice',
+    created_at: '2026-11-16T12:00:00Z',
+    file: { name: 'scene.blend', size: 2048, hash: 'abc123', updated_at: '2026-11-16T12:00:00Z' },
+    online: [],
+    save_requests: [],
+    ...overrides,
+  }
+}

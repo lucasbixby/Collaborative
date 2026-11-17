@@ -2,11 +2,13 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
 
 // In dev, the API and the socket are proxied to the server on :8000, so the app calls its own
-// origin as it does when FastAPI serves it (#22), and there's no CORS to set up.
+// origin as it does when FastAPI serves it. `base: './'` makes the built files load by relative
+// path, which the desktop app needs to open them from disk.
 const server = 'http://localhost:8000'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: './',
   plugins: [react()],
   server: {
     proxy: {
