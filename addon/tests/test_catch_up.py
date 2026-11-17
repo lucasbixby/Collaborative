@@ -63,9 +63,7 @@ def _local_cube(name="Local"):
 
 
 def _join(addon, relay):
-    bpy.context.window_manager.room_id = "room-a"
-    prefs = bpy.context.preferences.addons["collaborative_blender"].preferences
-    prefs.server_url = f"ws://localhost:{relay.port}"
+    addon.session.configure(server_url=f"ws://localhost:{relay.port}", room="room-a")
     assert bpy.ops.collaborative.join_room() == {"FINISHED"}
     wait_until(lambda: addon.client.status() == "connected" and relay._sockets)
 

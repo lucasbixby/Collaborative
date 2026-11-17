@@ -125,3 +125,80 @@ def test_id_survives_save_and_reopen(addon, tmp_path):
     bpy.ops.wm.open_mainfile(filepath=str(path))
 
     assert ids.get_id(bpy.context.scene.objects["Cube"]) == collab_id
+
+
+# -- IDs shared by everyone who opens the same project file ------------------------------------
+
+
+def _named(name):
+    obj = bpy.data.objects.new(name, None)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def test_shared_ids_depend_only_on_the_room_and_the_objects_name(scene):
+    from collaborative_blender import ids
+
+    cube, lamp = _named("Cube"), _named("Lamp")
+    ids.assign_shared_ids("studio")
+    first = (ids.get_id(cube), ids.get_id(lamp))
+
+    # Another person's Blender, opening the same file: same names, so the same IDs.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    cube, lamp = _named("Cube"), _named("Lamp")
+    ids.assign_shared_ids("studio")
+
+    assert (ids.get_id(cube), ids.get_id(lamp)) == first
+    assert first[0] != first[1]
+    assert all(UUID_PATTERN.match(collab_id) for collab_id in first)
+
+
+def test_shared_ids_differ_between_rooms(scene):
+    from collaborative_blender import ids
+
+    cube = _named("Cube")
+    ids.assign_shared_ids("studio")
+    in_studio = ids.get_id(cube)
+    del cube[ids.COLLAB_ID], scene[ids.SHARED_IDS_DONE]
+    ids.assign_shared_ids("garage")
+
+    assert ids.get_id(cube) != in_studio
+
+
+def test_an_object_that_already_has_an_id_keeps_it(scene):
+    from collaborative_blender import ids
+
+    cube = _named("Cube")
+    kept = ids.assign_new_id(cube)
+    ids.assign_shared_ids("studio")
+
+    assert ids.get_id(cube) == kept
+
+
+def test_an_object_added_after_the_first_time_is_new_not_whatever_had_its_name(scene):
+    from collaborative_blender import ids
+
+    old = _named("Cube")
+    ids.assign_shared_ids("studio")
+    old_id = ids.get_id(old)
+    bpy.data.objects.remove(old)
+    new = _named("Cube")  # same name as the object that was deleted
+
+    ids.assign_shared_ids("studio")  # a later launch of the same file
+    ids.ensure_ids()
+
+    assert ids.get_id(new) not in (None, old_id)
+
+
+def test_shared_ids_and_the_marker_are_saved_with_the_file(scene, tmp_path):
+    from collaborative_blender import ids
+
+    _named("Cube")
+    ids.assign_shared_ids("studio")
+    expected = ids.get_id(bpy.data.objects["Cube"])
+    path = str(tmp_path / "shared.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    bpy.ops.wm.open_mainfile(filepath=path)
+
+    assert ids.get_id(bpy.data.objects["Cube"]) == expected
+    assert bpy.context.scene.get(ids.SHARED_IDS_DONE)

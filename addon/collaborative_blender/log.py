@@ -1,9 +1,5 @@
-"""Logging for the add-on.
-
-Output goes to the terminal that started Blender. Each line is tagged with the client
-name from COLLAB_CLIENT (set by scripts/blender.sh), so two Blenders started with
-`blender.sh --two` can share one terminal.
-"""
+"""Logging for the add-on, to the terminal that started Blender. Each line is tagged with
+COLLAB_CLIENT (A / B), so two Blenders can share one terminal."""
 
 import os
 import time

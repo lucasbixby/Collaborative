@@ -1,28 +1,19 @@
-"""WebSocket connection to the relay server (#11, #12).
+"""WebSocket connection to the relay server.
 
-Two background daemon threads do all the networking: a reader (blocking `recv()` into
-an inbox queue) and a writer (an outbox queue into `send()`), which together also own
-the connect / reconnect lifecycle. Neither thread ever touches `bpy` — only the main
-thread may. `drain()` is the only point where a received message reaches Blender: a
-plain function, run by a `bpy.app.timers` tick on the main thread every ~20 ms.
+Two daemon threads do all the networking: a reader (blocking `recv` into an inbox queue) and a
+writer (an outbox queue into `send`), which also owns connecting and reconnecting. Neither
+touches `bpy`, which only the main thread may. `drain()`, run by a timer on the main thread
+every ~20 ms, is the one place a received message reaches Blender.
 
-Verified against the real relay from Blender 5.2's Python (10/21): a send from the main
-thread arrives at another client's background reader; sending still works while the same
-connection's reader is blocked in `recv()`; `close()` from the main thread stops the
-reader within ~1 ms; a server that isn't running raises `ConnectionRefusedError`; and
-after `close()`, `recv()` returns `""` rather than raising, so `""` means disconnected.
-
-Catch-up (#20): on every connection the server first sends the room's state as ordinary `ops`
-messages, then `{"type": "synced", "seq": N}`. `ops` go to `on_message` as usual. The first
-`synced` of a Join also calls `on_synced` with every object ID those catch-up messages
-mentioned, which is how detect knows which local objects the room hasn't seen (D-085). Each
+On every connection the server first sends the room's state as ordinary `ops` messages, then
+`synced`. The first `synced` of a Join also calls `on_synced` with every object ID those
+messages mentioned, which is how detect knows which local objects the room hasn't seen. Each
 inbox entry carries its socket's generation, so a `synced` left over from a dead socket can't
 mark the next one as caught up.
 
-Sign-in (#16, #17): the token goes in an `Authorization: Bearer` header, never the URL. If the
-server closes with 4401 (no or bad token) or 4403 (no access to the room), retrying with the same
-token can only fail the same way, so the connection stops instead of reconnecting, with status
-"refused" and the code in `refusal()`.
+The token goes in an `Authorization: Bearer` header, never the URL. If the server closes with
+4401 or 4403, retrying with the same token can only fail the same way, so the connection stops
+with status "refused" instead of reconnecting.
 """
 
 import json
@@ -48,9 +39,9 @@ OUTBOX_LIMIT = 1000
 CLOSE_UNAUTHENTICATED = 4401  # sign in (again) first
 CLOSE_FORBIDDEN = 4403  # not a member of the room, or it doesn't exist
 _REFUSALS = (CLOSE_UNAUTHENTICATED, CLOSE_FORBIDDEN)
+_CONTROL_TYPES = ("save", "save_pending", "save_result")
 
-# Same pattern the server enforces (docs/protocol.md, #11); checked here too so a typo'd
-# room id fails immediately instead of after a network round trip.
+# The server's own pattern, checked here so a bad room name fails without a network round trip.
 _ROOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -64,10 +55,12 @@ class _Connection:
         on_message: Callable[[dict], None],
         on_synced: Callable[[set[str]], None] | None = None,
         token: str = "",
+        on_control: Callable[[dict], None] | None = None,
     ) -> None:
         self.url = url
         self.on_message = on_message
         self.on_synced = on_synced
+        self.on_control = on_control
         self._header = [f"Authorization: Bearer {token}"] if token else []
         self.status = "connecting"
         self.refused: tuple[int, str] | None = None  # set by the reader on a 4401 / 4403 close
@@ -166,7 +159,7 @@ class _Connection:
     def _run_reader(self, sock: "_ws.WebSocket", dead: threading.Event, generation: int) -> None:
         while not dead.is_set():
             try:
-                # recv_data rather than recv: recv turns a close frame into "", losing its code.
+                # recv_data, not recv, which turns a close frame into "" and loses its code.
                 opcode, data = sock.recv_data()
             except Exception as exc:  # noqa: BLE001 - any recv failure means reconnect
                 log("client: recv failed", exc)
@@ -205,14 +198,16 @@ def connect(
     on_message: Callable[[dict], None],
     on_synced: Callable[[set[str]], None] | None = None,
     token: str = "",
+    on_control: Callable[[dict], None] | None = None,
 ) -> None:
     """Connect to `<server_url>/ws/rooms/<room_id>`, signed in with `token`, and return
     immediately.
 
-    `on_message` is called (on the main thread, from `drain()`) with each `ops` message, and
-    `on_synced` once, at the first `synced`, with the IDs the room's catch-up mentioned.
-    Replaces any existing connection. Raises `ValueError` for a `room_id` the server
-    would refuse anyway, without touching the network.
+    All three callbacks run on the main thread, from `drain()`: `on_message` with each `ops`
+    message, `on_synced` once, at the first `synced`, with the IDs the room's catch-up
+    mentioned, and `on_control` with each save message (`save`, `save_pending`, `save_result`).
+    Replaces any existing connection. Raises `ValueError` for a `room_id` the server would
+    refuse anyway, without touching the network.
     """
     global _conn
     if not _ROOM_ID_PATTERN.match(room_id):
@@ -220,7 +215,7 @@ def connect(
     if _conn is not None:
         _conn.stop()
     url = f"{server_url.rstrip('/')}/ws/rooms/{room_id}"
-    _conn = _Connection(url, on_message, on_synced, token)
+    _conn = _Connection(url, on_message, on_synced, token, on_control)
     if not bpy.app.timers.is_registered(_tick):
         bpy.app.timers.register(_tick, first_interval=DRAIN_INTERVAL, persistent=True)
 
@@ -231,6 +226,12 @@ def send(message: dict) -> None:
         text = json.dumps(message)
         timing.mark("queued", message.get("ops", []))  # before it can reach the writer thread
         _conn.send(text)
+
+
+def send_control(message: dict) -> None:
+    """Queue a non-`ops` message (a save request). A no-op if not connected."""
+    if _conn is not None:
+        _conn.send(json.dumps(message))
 
 
 def disconnect() -> None:
@@ -271,11 +272,9 @@ def _tick() -> float:
 
 
 def drain() -> None:
-    """Parse and dispatch every message received since the last call.
-
-    A plain function (not the timer callback itself), so headless tests can call it
-    directly; `bpy.app.timers` don't run without Blender's own event loop.
-    """
+    """Parse and dispatch every message received since the last call. A plain function, not
+    the timer callback itself, so headless tests can call it: timers don't run without
+    Blender's event loop."""
     if _conn is None:
         return
     conn = _conn
@@ -331,5 +330,9 @@ def _handle_message(conn: _Connection, generation: int, raw: str) -> None:
         return
     if message_type == "synced":
         _handle_synced(conn, generation, message)
+        return
+    if message_type in _CONTROL_TYPES:
+        if conn.on_control is not None:
+            conn.on_control(message)
         return
     log("client: ignoring unknown message type", message_type)

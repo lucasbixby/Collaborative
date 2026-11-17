@@ -1,21 +1,16 @@
-"""Detect local scene changes and turn them into `ops` messages (docs/protocol.md, #5).
+"""Detect local scene changes and turn them into `ops` messages (docs/protocol.md).
 
-Design (issue #5): handlers only set a dirty flag; a ~50 ms timer does the real work. When
-dirty, `flush()` calls `ids.ensure_ids()`, then diffs every scene object against a cache
-keyed by `collab_id`, turns each changed property into a `set` operation, an ID it hasn't
-seen into a `create` and a missing ID into a `delete` (#15), and sends them. One mechanism
-covers drags, renames, undo/redo, adds and deletes, since nothing holds object references
-across undo (D-018 to D-021).
+Blender's handlers only set a dirty flag; a ~50 ms timer does the work. When dirty, `flush()`
+diffs every scene object against a cache keyed by `collab_id`: a changed property becomes a
+`set`, an ID it hasn't seen a `create`, a missing ID a `delete`. One mechanism covers drags,
+renames, undo and redo, adds and deletes, and nothing holds an object reference across undo.
 
-Changes caused by applying a remote operation go through `suppressed()` (see apply.py, #6)
-to avoid echoing them back out as if they were local edits. Each emitted op's Lamport
-timestamp comes from the shared clock in `ordering.py` (#8), not a counter of its own.
+Changes made by applying a remote operation go through `suppressed()`, so they aren't sent
+back out as local edits. Timestamps come from the shared clock in ordering.py.
 
-Joining (#20): `start` takes a silent snapshot, so nothing already in the scene is sent then.
-Once the room's catch-up has been applied, `send_unknown_creates` sends a `create` for each
-local mesh the room doesn't know (merge on join, D-085). Edits made while not in a room are
-still never sent on their own: an object the room already knows keeps whatever this client
-had, until someone changes it again.
+`start` snapshots the scene silently, so nothing already in it is sent on joining. Once the
+room's catch-up is applied, `send_unknown_creates` offers the room each local mesh it doesn't
+know. Edits made while not in a room are never sent.
 """
 
 import json
@@ -28,8 +23,9 @@ from bpy.app.handlers import persistent
 from . import ids, ordering, timing
 from .log import log
 
-INTERVAL = 0.05  # 50 ms (D-019)
-MAX_MESSAGE_BYTES = 64 * 1024  # the relay's limit (docs/protocol.md, COLLAB_MAX_OPERATION_BYTES)
+INTERVAL = 0.05  # 50 ms
+MAX_MESSAGE_BYTES = 64 * 1024  # the relay's limit (COLLAB_MAX_OPERATION_BYTES)
+_ENVELOPE_BYTES = len('{"v": 1, "type": "ops", "ops": []}')
 SCENE_COLLECTION = "Scene Collection"  # how protocol.md names the scene's top level
 VERTEX_DECIMALS = 6  # keeps `create` messages small
 _TRANSFORM_PROPERTIES = ("location", "rotation", "scale")
@@ -42,7 +38,7 @@ _cache: dict[str, dict[str, object]] = {}
 _origin: str | None = None
 _send = None
 _flush_started_at = None
-_noticed_at = None  # timing (#24): when the scene first went dirty since the last flush
+_noticed_at = None  # for latency timing: when the scene first went dirty since the last flush
 
 
 def _read_rotation(obj: bpy.types.Object) -> dict:
@@ -118,8 +114,8 @@ def _make_create_op(obj: bpy.types.Object, collab_id: str, values: dict[str, obj
     """Everything another client needs to rebuild `obj`. Reads the base mesh, not the
     evaluated one, since modifiers aren't synced.
 
-    A `create` counts as a write of each property it carries (D-081), so it's recorded in
-    `versions` like a `set`, and an older `set` for this object loses to it."""
+    A `create` counts as a write of each property it carries, so it's recorded in `versions`
+    like a `set`, and an older `set` for this object loses to it."""
     lamport = ordering.clock.tick()
     for prop in _TRACKED_PROPERTIES:
         ordering.versions.record((collab_id, prop), (lamport, _origin))
@@ -154,19 +150,17 @@ def _send_create(obj: bpy.types.Object, collab_id: str, values: dict[str, object
     # Measured the way client.send serializes it, so this agrees with the relay's own check.
     size = len(json.dumps(message).encode("utf-8"))
     if size > MAX_MESSAGE_BYTES:
-        log(f"too large to sync (#27): {obj.name}, {size} bytes")
+        log(f"too large to sync: {obj.name}, {size} bytes")
         return
     _send_timed(message)
 
 
 def send_unknown_creates(known: set[str]) -> None:
-    """Merge on join (#20, D-085): send a `create` for each local object the room's catch-up
-    didn't mention, so joining with a scene adds it to the room rather than hiding it.
+    """Merge on join: send a `create` for each local object the room's catch-up didn't
+    mention, so joining with a scene adds it to the room rather than hiding it.
 
     Called once per Join, after the catch-up has been applied, with every object ID it
-    mentioned (created, set or deleted). Uses the normal create path: non-mesh objects stay
-    `not synced yet` and oversized ones `too large`. They're already in the cache, so the next
-    flush won't send them again.
+    mentioned. Uses the normal create path, so non-mesh and oversized objects are only logged.
     """
     if not _active:
         return
@@ -183,8 +177,8 @@ def send_unknown_creates(known: set[str]) -> None:
 
 
 def _send_timed(message: dict) -> None:
-    """Send `message`, first recording when the change behind it was noticed and when this
-    flush began (#24). Both are known only now, once the operations exist."""
+    """Send `message`, first recording (for latency timing) when the change behind it was
+    noticed and when this flush began: both are only known once the operations exist."""
     timing.mark("noticed", message["ops"], _noticed_at)
     timing.mark("flush_start", message["ops"], _flush_started_at)
     _send(message)
@@ -208,9 +202,9 @@ def flush() -> dict | None:
     `delete`s: a big mesh can't push the batch over the size limit, and a receiver always
     sees an object's `create` before any `set` for it.
 
-    Returns the `set` / `delete` batch, or None if there wasn't one (a flush that only sends
-    `create`s returns None). A plain function (not the timer callback itself), so headless
-    tests can call it directly; `bpy.app.timers` don't run without Blender's own event loop.
+    Returns this flush's `set`s and `delete`s as one message, or None if there were none (a
+    flush that only sends `create`s returns None); on the wire they are split if they wouldn't
+    fit in one. A plain function, not the timer callback itself, so headless tests can call it.
     """
     global _dirty, _cache, _flush_started_at, _noticed_at
     if not _dirty:
@@ -233,13 +227,26 @@ def flush() -> dict | None:
     ops.extend(_make_delete_op(collab_id) for collab_id in _cache if collab_id not in current)
     _cache = current
 
-    if not ops:
-        _noticed_at = None
-        return None
-    message = {"v": 1, "type": "ops", "ops": ops}
-    _send_timed(message)
+    for batch in _batches(ops):
+        _send_timed({"v": 1, "type": "ops", "ops": batch})
     _noticed_at = None
-    return message
+    return {"v": 1, "type": "ops", "ops": ops} if ops else None
+
+
+def _batches(ops: list[dict]) -> list[list[dict]]:
+    """Split `ops` into runs that each fit in one message. The relay rejects an oversized
+    message whole, which would lose every change in it (deleting a few hundred objects at once
+    is enough), while the order of the ops, which is all that matters, survives a split."""
+    batches: list[list[dict]] = []
+    size = MAX_MESSAGE_BYTES  # so the first op opens a batch
+    for op in ops:
+        cost = len(json.dumps(op).encode("utf-8")) + 2  # ", " between ops
+        if size + cost > MAX_MESSAGE_BYTES:
+            batches.append([])
+            size = _ENVELOPE_BYTES
+        batches[-1].append(op)
+        size += cost
+    return batches
 
 
 def _mark_dirty(*_args) -> None:
@@ -276,10 +283,9 @@ def _tick() -> float:
 def start(send) -> None:
     """Start turning local edits into operations, delivered to `send` every ~50 ms.
 
-    Generates a new client `origin` (D-025), then snapshots the current scene so joining
-    a room doesn't resend everything already in it. The Lamport clock is shared and never
-    resets (D-046), so a restarted client's edits still outrank its own older ones. Calling
-    this again while already started does nothing, so it's safe to call more than once.
+    Takes a new client `origin`, then snapshots the scene so joining doesn't resend what's
+    already in it. The Lamport clock is shared and never resets, so a restarted client's edits
+    still outrank its own older ones. Does nothing if already started.
     """
     global _active, _send, _origin, _dirty, _cache
     if _active:
@@ -310,21 +316,18 @@ def stop() -> None:
 
 
 def origin() -> str | None:
-    """This client's own `origin` UUID (None if detection hasn't started). Lets apply.py
-    (#6) defensively skip an incoming operation that is somehow this client's own."""
+    """This client's own `origin` UUID, or None if detection hasn't started."""
     return _origin
 
 
 @contextmanager
 def suppressed():
-    """Ignore changes made inside the block (used while applying a remote operation, #6).
+    """Ignore changes made inside the block (used while applying a remote operation).
 
-    Entering the outermost `suppressed()` flushes first: a local edit still waiting for
-    its 50 ms tick must be sent before a remote operation is applied, or it would be
-    absorbed into the cache on exit and never sent at all.
-
-    On exit the cache is refreshed from the scene without emitting anything, so a change
-    applied here is never diffed back out on the next flush as if it were a local edit.
+    Entering the outermost block flushes first: a local edit still waiting for its tick must
+    go out before a remote operation is applied, or it would be absorbed into the cache on
+    exit and never sent. On exit the cache is refreshed from the scene without sending, so
+    what was applied here isn't diffed back out as a local edit.
     """
     global _suppress_depth, _cache, _dirty
     if _suppress_depth == 0:

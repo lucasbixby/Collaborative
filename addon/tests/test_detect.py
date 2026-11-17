@@ -321,3 +321,26 @@ def test_emitted_messages_match_the_protocol_schema(sent):
     obj.rotation_axis_angle = (1.5708, 0.0, 0.0, 1.0)
     _settle()
     jsonschema.validate(instance=detect.flush(), schema=SCHEMA)
+
+
+def test_a_flush_too_big_for_one_message_is_split_and_nothing_is_lost(addon):
+    from collaborative_blender import detect
+
+    sent = []
+    objects = []
+    for number in range(400):
+        obj = bpy.data.objects.new(f"Object{number}", None)
+        bpy.context.scene.collection.objects.link(obj)
+        objects.append(obj)
+    detect.start(sent.append)
+    for obj in objects:
+        obj.location = (1.0, 2.0, 3.0)
+    bpy.context.view_layer.update()
+
+    batch = detect.flush()
+
+    assert len(batch["ops"]) == 400
+    assert len(sent) > 1
+    assert [op for message in sent for op in message["ops"]] == batch["ops"]
+    for message in sent:
+        assert len(json.dumps(message).encode("utf-8")) <= detect.MAX_MESSAGE_BYTES

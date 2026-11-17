@@ -246,7 +246,7 @@ def test_oversized_mesh_is_skipped_logged_once_and_stays_in_the_cache(sent, caps
     _settle_and_flush()
 
     assert sent == []
-    assert capsys.readouterr().out.count("too large to sync (#27)") == 1
+    assert capsys.readouterr().out.count("too large to sync") == 1
     assert ids.get_id(obj) in detect._cache
 
 

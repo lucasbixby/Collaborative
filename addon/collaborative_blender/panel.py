@@ -1,11 +1,12 @@
-"""Sidebar panel in the 3D viewport showing room and connection status."""
+"""Sidebar panel in the 3D viewport: which room this Blender is in, and how the connection and
+the last save are doing."""
 
 import bpy
 
-from . import client
+from . import client, saving, session
 
 _STATUS_WATCH_INTERVAL = 0.25  # seconds
-_last_seen_status: tuple[str, bool] | None = None
+_last_seen: tuple | None = None
 
 _STATUS_TEXT = {
     "disconnected": "Not connected",
@@ -13,6 +14,18 @@ _STATUS_TEXT = {
     "syncing": "Catching up with {room}…",
     "connected": "Connected to {room}",
     "reconnecting": "Reconnecting to {room}…",
+}
+
+# Why the server refused the connection; the client has stopped retrying.
+_REFUSAL_TEXT = {
+    client.CLOSE_UNAUTHENTICATED: "Signed out: launch again from the Collaborative app",
+    client.CLOSE_FORBIDDEN: "No access to {room}",
+}
+
+_ROLE_TEXT = {
+    "owner": "You're the host: saving updates the project for everyone",
+    "editor": "Saving asks the host to save the project",
+    "viewer": "You're viewing: your own edits stay on this computer",
 }
 
 
@@ -24,27 +37,20 @@ class COLLAB_PT_main(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        wm = context.window_manager
-        current_status = client.status()
+        current = session.current
+        if not current.room:
+            layout.label(text="Open a room from the Collaborative app")
+            return
 
+        layout.label(text=status_text(current.room), icon="WORLD")
+        if current.username:
+            layout.label(text=f"Signed in as {current.username}", icon="USER")
+        layout.label(text=_ROLE_TEXT.get(current.role, ""))
+        if saving.status:
+            layout.label(text=saving.status, icon="FILE_TICK")
         row = layout.row()
-        row.enabled = current_status in ("disconnected", "refused")
-        row.prop(wm, "room_id", text="Room")
-
-        layout.label(text=f"Status: {status_text(wm.room_id)}")
-        layout.operator("collaborative.join_room")
-        layout.operator("collaborative.leave_room")
-
-        layout.separator()
-        layout.label(text="Apply (dev aid, #6)")
-        layout.operator("collaborative.apply_from_clipboard")
-
-
-# Why the server refused the connection (#16, #17); the client has stopped retrying.
-_REFUSAL_TEXT = {
-    client.CLOSE_UNAUTHENTICATED: "Sign in first (Preferences > Add-ons > Collaborative)",
-    client.CLOSE_FORBIDDEN: "No access to {room}",
-}
+        row.operator("collaborative.join_room")
+        row.operator("collaborative.leave_room")
 
 
 def status_text(room: str) -> str:
@@ -58,7 +64,7 @@ def status_text(room: str) -> str:
 
 
 def _shown_status() -> str:
-    """The client's status, with "connected" split until the room's catch-up is in (#20)."""
+    """The client's status, with "connected" split until the room's catch-up is in."""
     current = client.status()
     if current == "connected" and not client.synced():
         return "syncing"
@@ -76,21 +82,19 @@ def _tag_redraw_viewports() -> None:
 
 
 def _watch_status() -> float:
-    """Blender only redraws the panel on mouse hover, but `client.status()` changes on
-    a background thread, so this timer polls it (and `synced()`) and asks for a redraw when
-    either changes. Reads them only — never touches the socket."""
-    global _last_seen_status
-    current = (client.status(), client.synced())
-    if current != _last_seen_status:
-        _last_seen_status = current
+    """Blender only redraws a panel on mouse hover, but the connection and save status change
+    on background threads, so this timer asks for a redraw when what the panel shows changes."""
+    global _last_seen
+    current = (client.status(), client.synced(), saving.status)
+    if current != _last_seen:
+        _last_seen = current
         _tag_redraw_viewports()
     return _STATUS_WATCH_INTERVAL
 
 
 def start_status_watch() -> None:
-    """Start polling `client.status()` for redraws. Called by Join; safe to call again."""
-    global _last_seen_status
-    _last_seen_status = None
+    global _last_seen
+    _last_seen = None
     if not bpy.app.timers.is_registered(_watch_status):
         bpy.app.timers.register(
             _watch_status, first_interval=_STATUS_WATCH_INTERVAL, persistent=True
@@ -98,20 +102,14 @@ def start_status_watch() -> None:
 
 
 def stop_status_watch() -> None:
-    """Stop polling. Called by Leave (and the `load_pre` handler); safe to call anytime."""
     if bpy.app.timers.is_registered(_watch_status):
         bpy.app.timers.unregister(_watch_status)
 
 
 def register() -> None:
-    bpy.types.WindowManager.room_id = bpy.props.StringProperty(
-        name="Room ID",
-        description="Room to join on the relay server",
-        default="demo",
-    )
     bpy.utils.register_class(COLLAB_PT_main)
 
 
 def unregister() -> None:
+    stop_status_watch()
     bpy.utils.unregister_class(COLLAB_PT_main)
-    del bpy.types.WindowManager.room_id

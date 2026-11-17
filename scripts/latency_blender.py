@@ -7,6 +7,7 @@ real add-on, on Blender's own timers. Files in LATENCY_SYNC_DIR keep the process
 import json
 import math
 import os
+import sys
 import pathlib
 import random
 import time
@@ -287,13 +288,14 @@ def begin():
             bpy.context.scene.collection.objects.link(bpy.data.objects.new(mesh.name, mesh))
         addon_utils.enable("collaborative_blender", default_set=True)
         bpy.types.SpaceView3D.draw_handler_add(_on_draw, (), "WINDOW", "POST_PIXEL")
-        bpy.context.window_manager.room_id = os.environ.get("LATENCY_ROOM", "latency")
-        prefs = bpy.context.preferences.addons["collaborative_blender"].preferences
-        prefs.server_url = os.environ.get("LATENCY_URL", "ws://localhost:8000")
-        prefs.auth_token = os.environ.get("LATENCY_TOKEN", "")
+        session = sys.modules["collaborative_blender"].session.configure(
+            server_url=os.environ.get("LATENCY_URL", "ws://localhost:8000"),
+            token=os.environ.get("LATENCY_TOKEN", ""),
+            room=os.environ.get("LATENCY_ROOM", "latency"),
+        )
         with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
             bpy.ops.collaborative.join_room()
-        say(f"Blender {bpy.app.version_string}, {SCENARIO}, joined {prefs.server_url}")
+        say(f"Blender {bpy.app.version_string}, {SCENARIO}, joined {session.server_url}")
         poll_until(lambda: client().status() == "connected", run_a if ME == "A" else run_b)
     except Exception:  # noqa: BLE001 - any failure ends the run and is reported
         finish(False, traceback.format_exc())
