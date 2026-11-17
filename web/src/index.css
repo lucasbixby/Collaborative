@@ -44,11 +44,23 @@ body {
    them together. */
 .field {
   position: fixed;
-  inset: -8vmax;
+  top: 84px;
+  bottom: 0;
+  left: 3vw;
+  width: 67vw;
   z-index: 0;
   pointer-events: none;
   filter: blur(10px);
   animation: hue 120s linear infinite;
+  /* Dots that cross the edge of the area fade out rather than being cut in half. */
+  mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent),
+    linear-gradient(to bottom, transparent, #000 9%);
+  mask-composite: intersect;
+  -webkit-mask-composite: source-in;
+}
+
+.field.below-wordmark {
+  top: min(22vw, 270px);
 }
 
 .field-dot {
@@ -620,7 +632,7 @@ select {
 
 @keyframes wave {
   50% {
-    transform: translateY(-3.2vmax);
+    transform: translateY(-2.6vmax);
   }
 }
 

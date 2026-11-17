@@ -43,7 +43,7 @@ function App() {
 
   return (
     <div className="page">
-      <BackgroundField />
+      <BackgroundField belowWordmark={!user} />
       {user && (
         <header className="site-header glass">
           <span className="brand">

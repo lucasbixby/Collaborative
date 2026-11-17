@@ -1,11 +1,12 @@
-// The page's background: a large field of soft dots behind everything. Each dot swells and
+// The page's background: a large field of soft dots behind the left two thirds of the window,
+// starting below the header (or, signed out, below the name). Each dot swells and
 // shrinks a little, each row rides up and down a beat after the one above so the field moves
 // like a wave, and the whole field drifts slowly round the colour wheel. The dots are shades of
 // one hue, so as it turns they stay a family.
 import type { CSSProperties } from 'react'
 
-const COLUMNS = 9
-const ROWS = 6
+const COLUMNS = 6
+const ROWS = 5
 const SHADES = [
   'hsl(322 78% 62%)',
   'hsl(300 62% 70%)',
@@ -38,9 +39,9 @@ const DOTS = Array.from({ length: COLUMNS * ROWS }, (_, index) => {
   }
 })
 
-export function BackgroundField() {
+export function BackgroundField({ belowWordmark = false }: { belowWordmark?: boolean }) {
   return (
-    <div className="field" aria-hidden="true">
+    <div className={belowWordmark ? 'field below-wordmark' : 'field'} aria-hidden="true">
       {DOTS.map((dot, index) => (
         <span
           key={index}

@@ -1366,3 +1366,8 @@ before the name.
 `web/src/assets/logo.png` (the supplied PNG with its white made transparent, 512 px), used in
 the wordmark and the header. Web: 27 tests pass, lint clean. Checked in headless Chrome: the
 wordmark fits at 820, 1280 and 1600 px wide, and the hue and wave move.
+
+**Follow-up, same day (#44):** after seeing D-116 running, Lucas asked for the animation to be
+contained rather than fill the window. The field now covers the left two thirds, starting below
+the header (below the name when signed out), with dots fading at its edges instead of being cut
+(`.field` in `index.css`; 6 x 5 dots instead of 9 x 6). Web: 27 tests pass, lint clean.
