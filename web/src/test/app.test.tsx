@@ -408,3 +408,22 @@ describe('a save request', () => {
     expect(screen.getByRole('dialog', { name: 'bob would like to save the project' })).toBeTruthy()
   })
 })
+
+describe('the background', () => {
+  // The form's "Blender file" section and the background once shared a class name, which hid
+  // the file picker behind the page.
+  it("doesn't share a class with anything in the page", async () => {
+    signedIn()
+    fakeServer({ ...me, 'GET /api/rooms': { status: 200, body: [] } })
+    const { container } = renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Host room' }))
+
+    const backdrop = container.querySelector('[aria-hidden="true"].backdrop')!
+    const classes = new Set(backdrop.className.split(' '))
+    for (const element of document.querySelectorAll('[class]')) {
+      if (backdrop.contains(element)) continue
+      expect([...element.classList].filter((name) => classes.has(name))).toEqual([])
+    }
+    expect(screen.getByLabelText('Blender file')).toBeTruthy()
+  })
+})

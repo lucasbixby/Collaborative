@@ -35,14 +35,14 @@ body {
   padding: 0 24px 64px;
 }
 
-.page > :not(.field) {
+.page > :not(.backdrop) {
   position: relative; /* above the field */
 }
 
 /* The background field. Soft-edged gradients rather than a blur filter on each dot, so 54
    moving dots cost the compositor almost nothing; one light blur over the whole field melts
    them together. */
-.field {
+.backdrop {
   position: fixed;
   top: 84px;
   bottom: 0;
@@ -62,14 +62,14 @@ body {
 /* On the sign-in screen the visible dots end as far above the window's bottom as the name's
    letters sit below its top: 0.43 of the name's size, less the ~24px the faded edge and the
    dots' own margins already leave. */
-.field.below-wordmark {
+.backdrop.below-wordmark {
   top: min(22vw, 270px);
   bottom: calc(0.43 * 0.134 * (min(100vw, 1180px) - 48px) - 24px);
   mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent),
     linear-gradient(to bottom, transparent, #000 9%, #000 91%, transparent);
 }
 
-.field-dot {
+.backdrop-dot {
   position: absolute;
   width: var(--size);
   height: var(--size);
@@ -78,7 +78,7 @@ body {
   animation-delay: var(--delay);
 }
 
-.field-dot i {
+.backdrop-dot i {
   display: block;
   width: 100%;
   height: 100%;

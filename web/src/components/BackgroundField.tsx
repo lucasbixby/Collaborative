@@ -41,11 +41,11 @@ const DOTS = Array.from({ length: COLUMNS * ROWS }, (_, index) => {
 
 export function BackgroundField({ belowWordmark = false }: { belowWordmark?: boolean }) {
   return (
-    <div className={belowWordmark ? 'field below-wordmark' : 'field'} aria-hidden="true">
+    <div className={belowWordmark ? 'backdrop below-wordmark' : 'backdrop'} aria-hidden="true">
       {DOTS.map((dot, index) => (
         <span
           key={index}
-          className="field-dot"
+          className="backdrop-dot"
           style={
             {
               left: dot.left,
