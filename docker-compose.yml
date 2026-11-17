@@ -1,10 +1,10 @@
-# Success criterion: the server runs from a single command.
+# The server, from a single command:
 #   docker compose up --build        # the web UI and the API at http://localhost:8000
 #
 # Settings can come from the shell or an optional .env next to this file; see server/.env.example.
 services:
   server:
-    # The repo root, so the image can build the web UI as well (#22).
+    # The repo root, so the image can build the web UI as well.
     build:
       context: .
       dockerfile: server/Dockerfile
@@ -12,17 +12,19 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Signs login tokens (#16). The default earns a loud warning at startup; set your own.
-      COLLAB_SECRET_KEY: ${COLLAB_SECRET_KEY:-dev-only-change-me}
+      # Signs login tokens. Empty: the server generates a key on first start and keeps it in
+      # the data volume.
+      COLLAB_SECRET_KEY: ${COLLAB_SECRET_KEY:-}
       COLLAB_DATABASE_URL: ${COLLAB_DATABASE_URL:-sqlite+aiosqlite:////srv/data/collaborative.db}
       COLLAB_ASSET_DIR: ${COLLAB_ASSET_DIR:-/srv/data/assets}
+      COLLAB_SECRET_KEY_FILE: ${COLLAB_SECRET_KEY_FILE:-/srv/data/secret.key}
       COLLAB_MAX_OPERATION_BYTES: ${COLLAB_MAX_OPERATION_BYTES:-65536}
+      COLLAB_MAX_FILE_BYTES: ${COLLAB_MAX_FILE_BYTES:-536870912}
       COLLAB_SNAPSHOT_EVERY: ${COLLAB_SNAPSHOT_EVERY:-500}
-      COLLAB_CORS_ORIGINS: ${COLLAB_CORS_ORIGINS:-["http://localhost:5173"]}
-      # Latency timing (#24), off unless set, e.g. COLLAB_TIMING=/srv/data/timing.jsonl.
+      # Latency timing, off unless set, e.g. COLLAB_TIMING=/srv/data/timing.jsonl.
       COLLAB_TIMING: ${COLLAB_TIMING:-}
     volumes:
-      - server-data:/srv/data   # database + asset store survive restarts
+      - server-data:/srv/data   # database, project files and the signing key survive restarts
 
 volumes:
   server-data:

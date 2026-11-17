@@ -10,28 +10,27 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, rooms, snapshots
-from app.auth.tokens import MIN_KEY_BYTES
-from app.config import DEFAULT_SECRET_KEY, settings
+from app.api import auth, files, rooms, snapshots
+from app.auth.ratelimit import RateLimiter
+from app.auth.tokens import MIN_KEY_BYTES, signing_key
+from app.config import KNOWN_WEAK_KEY, settings
 from app.db.session import create_engine, create_session_factory, create_tables
 from app.realtime import websocket
+from app.realtime.saves import SaveRequests
 from app.realtime.tasks import AppTasks
+from app.storage.local import LocalAssetStore
 from app.sync.state import SnapshotScheduler
 from app.sync.validation import OriginRegistry
 from app.web import add_web_routes
 
 logger = logging.getLogger(__name__)
 
+REGISTRATIONS_PER_WINDOW = 30
+
 
 def _configure_logging() -> None:
-    """Make `app.*` INFO logs (the relay's connect/disconnect/reject lines) visible.
-
-    Uvicorn configures its own loggers (uvicorn, uvicorn.access, uvicorn.error) but
-    leaves everyone else's alone; with no handler anywhere in our logger hierarchy, the
-    root logger's handler of last resort only prints WARNING and above, so these were
-    silently dropped. Guarded so building the app more than once (every test does, via
-    `create_app()`) doesn't stack up duplicate handlers.
-    """
+    """Uvicorn only configures its own loggers, so without a handler here the relay's INFO
+    lines are dropped. Guarded, because every test builds an app."""
     app_logger = logging.getLogger("app")
     app_logger.setLevel(logging.INFO)
     if not app_logger.handlers:
@@ -40,54 +39,66 @@ def _configure_logging() -> None:
         app_logger.addHandler(handler)
 
 
-_DEFAULT_KEY_WARNING = """
+_WEAK_KEY_WARNING = """
 ************************************************************************************
-  COLLAB_SECRET_KEY is the default, dev-only value, and it signs login tokens: anyone
-  who knows it (it's in the source) can sign in as any user. Set your own before
-  running this anywhere other people can reach it, e.g.
-      COLLAB_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+  COLLAB_SECRET_KEY is the old placeholder value, which is public: anyone can sign in
+  as any user. Unset it (the server then generates and keeps its own key) or set a
+  random one of 32+ characters.
 ************************************************************************************"""
+
+
+def _check_signing_key() -> None:
+    key = signing_key()  # creates the key file on a first start
+    if key == KNOWN_WEAK_KEY:
+        logger.warning(_WEAK_KEY_WARNING)
+    elif len(key.encode()) < MIN_KEY_BYTES:
+        logger.warning(
+            "COLLAB_SECRET_KEY is under %d bytes, which makes tokens easier to forge",
+            MIN_KEY_BYTES,
+        )
 
 
 def create_app(database_url: str | None = None, web_dir: Path | None = None) -> FastAPI:
     """Build the app. The database is only opened at startup, in `lifespan`, so importing this
-    module touches no files, and each app instance has its own engine (D-065)."""
+    module touches no files and each app instance has its own engine."""
     _configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if settings.secret_key == DEFAULT_SECRET_KEY:
-            logger.warning(_DEFAULT_KEY_WARNING)
-        elif len(settings.secret_key.encode()) < MIN_KEY_BYTES:
-            logger.warning(
-                "COLLAB_SECRET_KEY is under %d bytes, which makes tokens easier to forge",
-                MIN_KEY_BYTES,
-            )
+        _check_signing_key()
         engine = create_engine(database_url or settings.database_url)
         await create_tables(engine)
-        app.state.sessions = create_session_factory(engine)
-        app.state.tasks = AppTasks()
-        app.state.room_locks = defaultdict(asyncio.Lock)
-        app.state.origins = OriginRegistry()
-        app.state.snapshots = SnapshotScheduler(app.state.sessions, app.state.tasks.spawn)
+        state = app.state
+        state.sessions = create_session_factory(engine)
+        state.tasks = AppTasks()
+        state.room_locks = defaultdict(asyncio.Lock)
+        state.origins = OriginRegistry()
+        state.snapshots = SnapshotScheduler(state.sessions, state.tasks.spawn)
+        state.saves = SaveRequests()
+        state.assets = LocalAssetStore(settings.asset_dir)
+        window = settings.auth_window_seconds
+        state.login_limiter = RateLimiter(settings.auth_attempts, window)
+        state.join_limiter = RateLimiter(settings.auth_attempts, window)
+        state.register_limiter = RateLimiter(REGISTRATIONS_PER_WINDOW, window)
         yield
         # Handlers and their database work first: disposing the engine while a query is still
-        # running waits for it forever (D-088).
-        await app.state.tasks.shutdown()
+        # running waits for it forever.
+        await state.tasks.shutdown()
         await engine.dispose()
 
-    app = FastAPI(title="Collaborative", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Collaborative", version="0.2.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=False,  # tokens travel in a header the caller sets, never cookies
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(rooms.router, prefix="/api/rooms", tags=["rooms"])
+    app.include_router(files.router, prefix="/api/rooms", tags=["files"])
     app.include_router(snapshots.router, prefix="/api/rooms", tags=["snapshots"])
     app.include_router(websocket.router)
 
@@ -95,7 +106,7 @@ def create_app(database_url: str | None = None, web_dir: Path | None = None) -> 
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    # Last: its catch-all must not shadow anything above (#22).
+    # Last: its catch-all must not shadow anything above.
     if (web_dir or settings.web_dir) is not None:
         add_web_routes(app, web_dir or settings.web_dir)
 

@@ -1,7 +1,7 @@
 # Built from the repo root (docker-compose.yml sets the context), so the web UI can be built
 # here too; server/Dockerfile.dockerignore lists the few paths that go in.
 
-# Stage 1: the web UI (#22). Only its output is kept; Node isn't in the final image.
+# Stage 1: the web UI. Only its output is kept; Node isn't in the final image.
 FROM node:22-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
@@ -40,8 +40,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 --start-period=30s --start-interval=1s \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
 
-# One worker on purpose: rooms (ConnectionManager) and origin pins (OriginRegistry) live in this
-# process's memory, so a second worker would split a room in two, with clients on different
-# workers never seeing each other's edits. SQLite also has only one writer at a time.
+# One worker on purpose: rooms, origin pins and save requests live in this process's memory, so
+# a second worker would split a room in two. SQLite also has only one writer at a time.
+# --ws-max-size: a protocol message is at most 64 KiB, so nothing near uvicorn's 16 MiB default
+# frame size is ever legitimate, and a client can't make the server buffer that much.
 # Exec form, so uvicorn is PID 1 and receives SIGTERM from `docker compose stop`.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws-max-size", "1048576"]

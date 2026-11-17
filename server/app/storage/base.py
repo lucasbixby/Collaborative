@@ -1,19 +1,23 @@
-"""Storage interface for large assets, addressed by content hash.
+"""Storage interface for large files, addressed by content hash. The rest of the server only
+sees hashes, so local disk can be swapped for object storage by adding an implementation."""
 
-The sync engine only ever sees hashes, so local disk can later be swapped for
-object storage (e.g. Cloudflare R2) by adding another implementation.
-"""
-
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Protocol
 
 
+class FileTooLarge(Exception):
+    pass
+
+
 class AssetStore(Protocol):
-    async def put(self, data: bytes) -> str:
-        """Store bytes and return their content hash."""
+    async def put_stream(self, chunks: AsyncIterator[bytes], max_bytes: int) -> tuple[str, int]:
+        """Store the stream and return (sha256 hex, size). Raises FileTooLarge past `max_bytes`,
+        keeping nothing."""
         ...
 
-    async def get(self, content_hash: str) -> bytes:
+    def path(self, content_hash: str) -> Path | None:
+        """A local path to read the content from, or None if it isn't stored."""
         ...
 
-    async def exists(self, content_hash: str) -> bool:
-        ...
+    async def delete(self, content_hash: str) -> None: ...

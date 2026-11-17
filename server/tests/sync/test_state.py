@@ -248,13 +248,14 @@ async def test_snapshots_are_per_room(session, append, monkeypatch):
     assert {s.room_id for s in await _snapshots(session)} == {ROOM}
 
 
-async def test_the_log_is_never_trimmed(session, append, monkeypatch):
+async def test_the_log_is_never_trimmed_but_old_snapshots_are(session, append, monkeypatch):
     monkeypatch.setattr(settings, "snapshot_every", 1)
-    for lamport in range(1, 4):
+    for lamport in range(1, 5):
         await append(move(float(lamport), lamport=lamport))
 
-    assert len(await log.since(session, ROOM)) == 3
-    assert len(await _snapshots(session)) == 3
+    assert len(await log.since(session, ROOM)) == 4
+    # Each snapshot holds the whole state and only the newest is read, so only two are kept.
+    assert [snapshot.seq for snapshot in await _snapshots(session)] == [3, 4]
 
 
 def test_state_and_snapshots_survive_a_restart(database_url, monkeypatch):

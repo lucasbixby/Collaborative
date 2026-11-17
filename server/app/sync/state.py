@@ -1,10 +1,9 @@
-"""A room's current state: the latest snapshot plus the log after it (#20).
+"""A room's current state: the latest snapshot plus the log after it.
 
 `load_state` is the one way to read it, used by the socket's catch-up and by REST.
-`SnapshotScheduler` decides when to write a snapshot (every `settings.snapshot_every`
-operations, D-082) by counting in memory, and writes it in a background task, so the relay
-never touches the database for it per message (D-088). Log rows are never deleted: the history
-is a success criterion, so compaction is a follow-up.
+`SnapshotScheduler` counts appends in memory and writes a snapshot in a background task every
+`settings.snapshot_every` operations, so the relay never queries the database for it per
+message. Log rows are never deleted: the history is a success criterion.
 
 `catch_up_messages` turns a state into `ops` messages that obey the same rules as any
 client's: one `create` per message, one origin per message, each at most the size limit.
@@ -16,7 +15,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -25,6 +24,8 @@ from app.sync import log
 from app.sync.conflicts import RoomState
 
 logger = logging.getLogger(__name__)
+
+KEPT_SNAPSHOTS = 2  # the latest, and one spare in case its write is ever found damaged
 
 
 def encode(message: dict) -> str:
@@ -64,12 +65,23 @@ async def ops_since_snapshot(session: AsyncSession, room_id: str) -> int:
 
 
 async def write_snapshot(session: AsyncSession, room_id: str) -> Snapshot:
-    """Fold the room's current state and save it as a new snapshot."""
+    """Fold the room's current state and save it as a new snapshot. Only the newest
+    KEPT_SNAPSHOTS are kept: each one holds the whole state, and only the latest is ever read."""
     state, last_seq = await load_state(session, room_id)
     new = Snapshot(
         room_id=room_id, seq=last_seq, state=state.to_json(), created_at=datetime.now(UTC)
     )
     session.add(new)
+    await session.flush()
+    kept = (
+        select(Snapshot.id)
+        .where(Snapshot.room_id == room_id)
+        .order_by(Snapshot.seq.desc(), Snapshot.id.desc())
+        .limit(KEPT_SNAPSHOTS)
+    )
+    await session.execute(
+        delete(Snapshot).where(Snapshot.room_id == room_id, Snapshot.id.not_in(kept))
+    )
     await session.commit()
     return new
 
@@ -100,6 +112,10 @@ class SnapshotScheduler:
     def seed(self, room_id: str, pending: int) -> None:
         """Start counting from `pending`, the ops already logged since the latest snapshot."""
         self._pending.setdefault(room_id, pending)
+
+    def forget(self, room_id: str) -> None:
+        """Stop counting for a room that was deleted."""
+        self._pending.pop(room_id, None)
 
     def appended(self, room_id: str, count: int) -> None:
         """Note `count` new ops for the room, starting a snapshot if one is due."""

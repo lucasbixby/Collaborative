@@ -1,9 +1,7 @@
-"""Per-room permissions, enforced server-side (#17): owner > editor > viewer.
+"""Per-room permissions, enforced server-side: owner (the host) > editor > viewer.
 
-The checks take a role, or None for someone who isn't a member (or a room that doesn't exist),
-so every caller asks the same question the same way. The relay asks once per connection and
-keeps the role on the connection; a role change reaches open connections through
-app.realtime.access.
+The checks take a role, or None for someone who isn't a member, so every caller asks the same
+question the same way.
 """
 
 from enum import StrEnum
@@ -14,16 +12,6 @@ class Role(StrEnum):
     EDITOR = "editor"
     VIEWER = "viewer"
 
-    @property
-    def rank(self) -> int:
-        return _RANK[self]
-
-
-_RANK = {Role.VIEWER: 0, Role.EDITOR: 1, Role.OWNER: 2}
-
-
-def higher(first: Role, second: Role) -> Role:
-    return first if first.rank >= second.rank else second
 
 
 def can_join(role: Role | None) -> bool:
@@ -36,5 +24,5 @@ def can_send_operations(role: Role | None) -> bool:
 
 
 def can_manage(role: Role | None) -> bool:
-    """Invite people, change roles, and remove members."""
+    """Change roles, remove members, replace the project file, answer save requests, delete."""
     return role == Role.OWNER

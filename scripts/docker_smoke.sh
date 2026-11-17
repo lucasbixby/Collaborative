@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export COMPOSE_PROJECT_NAME=collaborative-smoke
-export COLLAB_SECRET_KEY=dev-only-change-me  # the default, whatever a local .env says
+export COLLAB_SECRET_KEY=dev-only-change-me  # the old public placeholder: must earn a warning
 VOLUME="${COMPOSE_PROJECT_NAME}_server-data"
 ROOM=demo
 USERNAME=smoke
@@ -92,7 +92,7 @@ TOKEN="$(curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d "$credent
 [[ -n "$TOKEN" ]] || fail "login returned no token"
 [[ "$(api GET /api/auth/me)" == *"\"username\":\"$USERNAME\""* ]] || fail "/api/auth/me doesn't know the token"
 pass "registered $USERNAME and got a token"
-[[ "$(api POST /api/rooms "{\"room_id\":\"$ROOM\"}")" == *'"role":"owner"'* ]] || fail "couldn't create room $ROOM"
+[[ "$(api POST /api/rooms "{\"room_id\":\"$ROOM\",\"password\":\"$PASSWORD\"}")" == *'"role":"owner"'* ]] || fail "couldn't create room $ROOM"
 pass "created room $ROOM, owned by $USERNAME"
 as_token "" refused "$ROOM" 4401 || fail "a socket without a token wasn't refused with 4401"
 pass "a socket without a token is closed with 4401"
