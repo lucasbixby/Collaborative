@@ -59,8 +59,14 @@ body {
   -webkit-mask-composite: source-in;
 }
 
+/* On the sign-in screen the visible dots end as far above the window's bottom as the name's
+   letters sit below its top: 0.43 of the name's size, less the ~24px the faded edge and the
+   dots' own margins already leave. */
 .field.below-wordmark {
   top: min(22vw, 270px);
+  bottom: calc(0.43 * 0.134 * (min(100vw, 1180px) - 48px) - 24px);
+  mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent),
+    linear-gradient(to bottom, transparent, #000 9%, #000 91%, transparent);
 }
 
 .field-dot {
