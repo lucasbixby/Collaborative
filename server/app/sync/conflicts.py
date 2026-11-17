@@ -1,18 +1,18 @@
-"""A room's current state, folded from its operations (#20).
+"""A room's current state, folded from its operations.
 
 `RoomState` applies operations in `seq` order with the same rules the add-on uses
 (docs/protocol.md rules 1–3), so the state it ends with is what every client that saw the
 same operations ends with. Pure Python on plain op dicts (validated JSON from the log), with
-no database or sockets, so it can be tested alone and #21's convergence tests can build on it.
+no database or sockets, so it can be tested alone.
 
-Rules (D-081):
+Rules:
 - `set`: per (object, property), the op with the highest (lamport, origin) wins, the same
   comparison as the add-on's `ordering.newer`.
 - `create`: the first one for an ID wins (IDs are UUIDs, so a repeat is a retry). It also
   counts as a write of `location`, `rotation`, `scale` and `name` at its own (lamport, origin),
   so a `set` older than the object's `create` loses.
 - `delete`: the ID is tombstoned, its `create` and `set`s are dropped, and every later op for
-  it is ignored, including a `create`. Deletes win whatever their timestamp (D-026). Of
+  it is ignored, including a `create`. Deletes win whatever their timestamp. Of
   several deletes for one ID, the oldest by (lamport, origin) is kept.
 """
 

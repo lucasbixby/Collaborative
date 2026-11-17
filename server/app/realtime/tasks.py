@@ -1,4 +1,4 @@
-"""The app's own tasks: connection handlers and the database work they start (#20, D-088).
+"""The app's own tasks: connection handlers and the database work they start.
 
 A connection handler can be cancelled at any await: a client that leaves, a test that ends, or
 shutdown. If that await is inside a database query, the aiosqlite connection is left half-closed,

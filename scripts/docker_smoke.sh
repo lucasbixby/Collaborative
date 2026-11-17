@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export COMPOSE_PROJECT_NAME=collaborative-smoke
-export COLLAB_SECRET_KEY=dev-only-change-me  # the default, whatever a local .env says
+export COLLAB_SECRET_KEY=dev-only-change-me  # the old public placeholder: must earn a warning
 VOLUME="${COMPOSE_PROJECT_NAME}_server-data"
 ROOM=demo
 USERNAME=smoke
@@ -61,15 +61,13 @@ wait_healthy
 curl -fsS -m 2 http://localhost:8000/health >/dev/null || fail "/health isn't reachable from the host on port 8000"
 pass "/health answers on the published port"
 [[ "$(curl -fsS -m 2 http://localhost:8000/)" == *'<div id="root">'* ]] || fail "/ doesn't serve the web UI"
-pass "/ serves the web UI (#22)"
-[[ "$(curl -fsS -m 2 http://localhost:8000/join/anything)" == *'<div id="root">'* ]] || fail "/join/anything doesn't fall back to the app"
-pass "a client route (/join/anything) falls back to index.html"
+pass "/ serves the web UI"
 api_404="$(curl -sS -m 2 -o /dev/null -w '%{http_code} %{content_type}' http://localhost:8000/api/nope)"
 [[ "$api_404" == "404 application/json" ]] || fail "/api/nope gave $api_404, not a JSON 404"
 pass "an unknown /api route is still a JSON 404"
 # Not a pipe into grep -q: it quits at the first match, and pipefail then fails on the SIGPIPE.
 [[ "$(docker compose logs server)" == *COLLAB_SECRET_KEY* ]] || fail "no secret-key warning in the logs"
-pass "the default secret key is warned about"
+pass "the old placeholder secret key is warned about"
 
 # The smoke client runs in the container, signed in through COLLAB_TOKEN (empty: signed out).
 smoke_client() { docker compose exec -T -e COLLAB_TOKEN="$TOKEN" server python - "$@" < scripts/smoke_client.py; }
@@ -92,7 +90,7 @@ TOKEN="$(curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d "$credent
 [[ -n "$TOKEN" ]] || fail "login returned no token"
 [[ "$(api GET /api/auth/me)" == *"\"username\":\"$USERNAME\""* ]] || fail "/api/auth/me doesn't know the token"
 pass "registered $USERNAME and got a token"
-[[ "$(api POST /api/rooms "{\"room_id\":\"$ROOM\"}")" == *'"role":"owner"'* ]] || fail "couldn't create room $ROOM"
+[[ "$(api POST /api/rooms "{\"room_id\":\"$ROOM\",\"password\":\"$PASSWORD\"}")" == *'"role":"owner"'* ]] || fail "couldn't create room $ROOM"
 pass "created room $ROOM, owned by $USERNAME"
 as_token "" refused "$ROOM" 4401 || fail "a socket without a token wasn't refused with 4401"
 pass "a socket without a token is closed with 4401"

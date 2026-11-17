@@ -1,4 +1,4 @@
-"""Out-of-band latency timing (#24): off unless COLLAB_TIMING names a JSONL file.
+"""Out-of-band latency timing: off unless COLLAB_TIMING names a JSONL file.
 
 The server's half of addon/collaborative_blender/timing.py; see that file for the design. Records
 when an operation passed each stage, keyed by (origin, lamport, object), for

@@ -1,13 +1,8 @@
-"""Order operations and decide which value wins (D-006, protocol rule 1; #8 / #9).
+"""Order operations and decide which value wins (docs/protocol.md rule 1).
 
-Pure Python, no `bpy`, so it's unit-testable on its own. `detect.py` stamps its outgoing
-operations with `clock.tick()` and records them in `versions`; `apply.py` merges an
-incoming operation's timestamp with `clock.observe()` and checks it against `versions`
-before applying it. One shared clock and one shared `Versions`, used by both.
-
-`tombstones` is the same idea for deletes (protocol rule 2, #15): the `collab_id`s this
-client has deleted or seen deleted. `detect.py` adds its own deletes, `apply.py` adds remote
-ones, and an ID in here is never used again.
+Pure Python, no `bpy`. One clock and one `Versions` are shared: detect.py stamps and records
+what it sends, apply.py merges and checks what it receives. `tombstones` holds the IDs this
+client has deleted or seen deleted; an ID in it is never used again.
 """
 
 OpId = tuple[int, str]  # (lamport, origin): unique per operation, and its ordering key
@@ -20,12 +15,8 @@ def newer(a: OpId, b: OpId) -> bool:
 
 
 class LamportClock:
-    """A client's own Lamport counter.
-
-    Never goes backwards, including across `detect.stop()` / `start()`: resetting it on
-    restart (the original behaviour, flagged in the #5 review) would let a restarted
-    client's new edits lose to its own or others' older ones under last-writer-wins.
-    """
+    """A client's own Lamport counter. It never goes backwards, not even across leaving and
+    rejoining: a reset would let new edits lose to older ones under last-writer-wins."""
 
     def __init__(self) -> None:
         self._value = 0
@@ -41,8 +32,8 @@ class LamportClock:
 
 
 class Versions:
-    """Last-writer-wins state (#9): the `(lamport, origin)` last sent or applied for each
-    `(collab_id, property)` key, so an incoming operation can be checked against it."""
+    """The `(lamport, origin)` last sent or applied for each `(collab_id, property)`, which an
+    incoming operation is checked against."""
 
     def __init__(self) -> None:
         self._last: dict[tuple[str, str], OpId] = {}

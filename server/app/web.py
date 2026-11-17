@@ -1,4 +1,4 @@
-"""Serve the built web UI (#22) from the same server, so one image and one port do everything.
+"""Serve the built web UI from the same server, so one image and one port do everything.
 
 `COLLAB_WEB_DIR` points at Vite's output (`web/dist`; `/srv/web` in the Docker image). A file
 that exists there is served as is (the hashed JS and CSS under `assets/`, the favicon), and any

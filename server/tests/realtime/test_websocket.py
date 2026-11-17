@@ -521,3 +521,16 @@ def test_connect_is_logged(client, room, caplog):
         pass
 
     assert f"connect room={room_id} user=tester role=owner clients=1" in caplog.text
+
+
+def test_a_binary_frame_gets_an_error_and_the_connection_stays_open(client, room):
+    room_id = room()
+    with _ws(client, room_id) as a, _ws(client, room_id) as b:
+        a.send_bytes(b"\x00\x01")
+        assert json.loads(a.receive_text()) == {
+            "v": 1,
+            "type": "error",
+            "message": "messages must be JSON text frames",
+        }
+        a.send_text(json.dumps(MOVE_AND_ROTATE))
+        assert json.loads(b.receive_text()) == MOVE_AND_ROTATE

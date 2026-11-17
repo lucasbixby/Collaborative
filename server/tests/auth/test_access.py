@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.main import create_app
-from tests.accounts import bearer, ensure_room, token_for
+from tests.accounts import bearer, ensure_room, join, token_for
 from tests.catchup import read_catch_up
 from tests.sync.test_conflicts import A, B, create, move
 
@@ -62,8 +62,7 @@ def studio(client):
     ensure_room(client, "studio")
     for name, role in (("bob", "editor"), ("vera", "viewer")):
         people[role] = bearer(token_for(client, name))
-        code = client.post("/api/rooms/studio/invites", json={"role": role}).json()["code"]
-        assert client.post(f"/api/rooms/join/{code}", headers=people[role]).status_code == 200
+        join(client, "studio", people[role], role)
     return people
 
 
@@ -154,8 +153,7 @@ def test_origin_ownership_survives_a_restart(database_url):
         alice = bearer(token_for(first, "alice"))
         bob = bearer(token_for(first, "bob"))
         ensure_room(first, "studio", alice)
-        code = first.post("/api/rooms/studio/invites", json={"role": "editor"}, headers=alice)
-        first.post(f"/api/rooms/join/{code.json()['code']}", headers=bob)
+        join(first, "studio", bob)
         with _connect(first, alice) as ws:
             read_catch_up(ws)
             ws.send_text(_ops(create(origin=A)))

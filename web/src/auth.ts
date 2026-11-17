@@ -5,6 +5,7 @@ import type { User } from './api/client'
 
 export interface Auth {
   user: User | null
+  token: string | null
   /** True while a stored token is being checked, so the app doesn't flash the sign-in page. */
   checking: boolean
   /** Why checking a stored token failed, other than a 401 (the server being down, say). */

@@ -5,8 +5,8 @@ plain dictionaries, and the server parses them with the models in
 `server/app/sync/operations.py` (#7). Both sides follow this document; when they
 disagree, this document is right and the code is fixed.
 
-**Version 1** · status: `ops`, `error` and `synced` specified, with catch-up on connect (#20)
-and sign-in by header (#16, #17).
+**Version 1** · `ops`, `error`, `synced` and the save messages, with catch-up on connect and
+sign-in by header.
 Design decisions D-022 to D-026 in [devlog.md](devlog.md), based on the change-detection spike
 ([spike-notes.md](spike-notes.md)).
 
@@ -28,8 +28,12 @@ Every message is an object with a protocol version `v` and a `type`.
 | `type` | Direction | Purpose | Status |
 |---|---|---|---|
 | `ops` | add-on → server → other add-ons | A batch of operations | **Specified below** |
-| `synced` | server → add-on | The room's catch-up is complete | **Specified below** (#20) |
+| `synced` | server → add-on | The room's catch-up is complete | **Specified below** |
 | `error` | server → add-on | A message was rejected, and why | **Specified below** |
+| `save_request` | guest's add-on → server | The guest saved, and asks the host to save the project | [Saving](#saving) |
+| `save_pending` | server → that guest | The request is waiting for the host | [Saving](#saving) |
+| `save` | server → host's add-on | The host approved a request: save the project file now | [Saving](#saving) |
+| `save_result` | server → that guest | The host's answer | [Saving](#saving) |
 
 There's no `join` message: the token goes in the connection's `Authorization` header instead
 (D-091; see [Access](#access)). There's no `catch_up` request and no `snapshot` message either:
@@ -98,6 +102,28 @@ the client receives after it is live.
 | `type` | `"synced"` | Message type |
 | `seq` | integer, 0 or more | The last log `seq` the catch-up includes; 0 for a room with no operations |
 
+### Saving
+
+The project file belongs to the room's host. These messages carry no scene data; they only move
+a "please save" from a guest to the host and the answer back.
+
+```text
+{ "v": 1, "type": "save_request" }
+{ "v": 1, "type": "save_pending" }
+{ "v": 1, "type": "save", "requested_by": "bob" }
+{ "v": 1, "type": "save_result", "approved": true, "by": "alice" }
+```
+
+1. A guest (an editor) saves in Blender. Their add-on sends `save_request` and gets
+   `save_pending`. The server keeps one pending request per user per room, in memory, for ten
+   minutes. From the host the message is ignored (their save needs nobody's approval), and a
+   viewer gets the `error` "viewers can't edit".
+2. The host's app sees the request in `GET /api/rooms` (`save_requests`) and answers with
+   `POST /api/rooms/{id}/save-requests/{request_id}` `{"approve": true | false}`.
+3. Approved: the server sends `save` to the approving host's own connections in the room, and
+   their Blender saves its file and uploads it (`PUT …/file`). With no such connection the
+   answer is `409` and the request stays. Either way the guest gets `save_result`.
+
 ## Operations
 
 Every operation describes one change to one object, and carries everything needed to order it
@@ -165,7 +191,9 @@ Plus the common fields. Duplicating an object (Shift+D, Alt+D) is sent as a `cre
 **One `create` per message (#15).** Each `create` is sent as its own `ops` message, ahead of
 the batch carrying that flush's `set`s and `delete`s. A big mesh then can't push the batch over
 the size limit, and a receiver sees an object's `create` before any `set` for it. A `create`
-whose message would exceed 64 KiB isn't sent at all (#27). The receiver links the object into
+whose message would exceed 64 KiB isn't sent at all: the object still reaches others in the
+project file. A flush's `set`s and `delete`s that wouldn't fit in one message are split into
+several, in order. The receiver links the object into
 the named collection if this scene has one, otherwise the scene's top level, and Blender may
 rename it (`Cube.001`) if the name is taken.
 
@@ -239,10 +267,22 @@ Only the common fields.
     disconnected are already queued. Edits made while not in a room at all are never sent,
     so an object the room already knows keeps the room's state on other clients.
 
-## Not synced yet
+## Object IDs in a shared file
+
+Everyone in a room opens the same project file, so they must agree on each object's ID without
+the file having been prepared. On joining, the add-on gives every object that has no `collab_id`
+the UUID (version 5) of `"<room>/<object name>"`: names are unique within a file, so each
+client derives the same ID. It then marks the scene, and the IDs and the mark are saved with the
+file on the host's next save. A marked scene is never given derived IDs again: an object added
+later is new and gets a random ID, even if it has the name of one that was deleted.
+
+## Not synced live
+
+These reach others through the project file (the host's next save, and the next launch), not as
+operations:
 
 - Moving an object to another collection after it's created
-- Mesh edits after creation (stretch goal #26) and meshes over the size limit (#27)
+- Mesh edits after creation, and meshes over the size limit
 - Cameras, lights, empties, materials, modifiers, parenting. A new non-mesh object is logged as
   `not synced yet` and sends no `create`
 - Loose edges: `create` carries only vertices and faces, so a Circle arrives as bare vertices
@@ -489,13 +529,14 @@ Deleting it:
 
 ## Connection
 
-`ws://<host>:8000/ws/rooms/{room_id}`, with the header `Authorization: Bearer <token>`.
+`ws://<host>:8000/ws/rooms/{room_id}`, with the header `Authorization: Bearer <token>`. Messages
+are text frames; a binary frame gets an `error`.
 
 `room_id` must match `^[A-Za-z0-9_-]{1,64}$`; the server closes the connection with code
 `1008` otherwise. A room's connections exist only while at least one client is in it, but its
 operations and snapshots are kept (#19, #20).
 
-### Access (#16, #17)
+### Access
 
 The token comes from `POST /api/auth/login` (below) and goes in the `Authorization` header,
 **never the URL**: URLs end up in access logs, and a token in a query string is ignored. The
@@ -505,8 +546,8 @@ fails closes it **before any catch-up**:
 | Close code | Reason text (for people) | Meaning | Client should |
 |---|---|---|---|
 | `4401` | `sign in first`, or `invalid or expired token; sign in again` | No token, a bad one, or an expired one | Stop reconnecting; ask the user to sign in |
-| `4403` | `no access to room <id>` | The room doesn't exist, or the user isn't a member: the same reason for both, so it doesn't tell anyone which rooms exist | Stop reconnecting; the user needs an invite (or to create the room) |
-| `4403` | `removed from room <id>` | An owner removed this user while connected | Same |
+| `4403` | `no access to room <id>` | The room doesn't exist, or the user isn't a member: the same reason for both, so it doesn't tell anyone which rooms exist | Stop reconnecting; the user joins the room in the app first |
+| `4403` | `removed from room <id>`, `room <id> was deleted` | An owner removed this user, or deleted the room, while connected | Same |
 
 Retrying with the same token can only fail the same way, so the add-on stops instead of backing
 off and retrying.
@@ -521,7 +562,7 @@ Roles, per room: **owner** > **editor** > **viewer**.
   downgraded editor stays connected, as a viewer. A removed member's sockets are closed with
   `4403` (D-095).
 
-### Catch-up on connect (#20)
+### Catch-up on connect
 
 Every new connection, whether it's a first join, a late join or a reconnect after a drop, gets
 the same sequence, so a client never has to ask for what it missed (D-084):
@@ -544,7 +585,8 @@ are idempotent under last-writer-wins and tombstones, but nothing is lost.
 The client applies catch-up `ops` like any other (rules 1–3), and skips any of its own.
 
 **Snapshots** are a cache over the log, which is never trimmed: one is written whenever a
-room's log has grown `COLLAB_SNAPSHOT_EVERY` operations (default 500) past the last (D-082).
+room's log has grown `COLLAB_SNAPSHOT_EVERY` operations (default 500) past the last, and only
+the newest two per room are kept.
 
 ### REST
 
@@ -562,26 +604,33 @@ passwords are at least 8 characters.
 | `GET /api/auth/me` | the signed-in user |
 
 A token is valid for `COLLAB_TOKEN_TTL_HOURS` (default 168, one week). There's no revocation:
-signing out forgets the token on that machine.
+signing out forgets the token on that machine. After `COLLAB_AUTH_ATTEMPTS` (10) failed logins
+for one name from one client within `COLLAB_AUTH_WINDOW_SECONDS` (300), further tries are `429`
+with `Retry-After`; registration is limited per client too.
 
-**Rooms (#18).** A room must be created before anyone can join it.
+**Rooms.** A room is hosted (created) with a password, and joined with its name and password.
 
 | Request | Who | Response |
 |---|---|---|
-| `POST /api/rooms` `{"room_id"}` | anyone signed in | `201`, the creator is owner; `409` if the id is taken |
-| `GET /api/rooms` | anyone signed in | `[{"room_id", "role", "created_at"}]`: my rooms |
-| `GET /api/rooms/{id}` | members | the room, my role, and `members: [{"username", "role", "joined_at"}]` |
-| `GET /api/rooms/{id}/presence` | members | `{"room_id", "users": [{"username", "role", "connections"}]}`: who has a socket open in the room now, once per user, with how many (#22). This server process's view; the web UI polls it |
-| `POST /api/rooms/{id}/invites` `{"role": "editor" \| "viewer", "expires_in_hours": 24}` | owners | `201` `{"code", "room_id", "role", "expires_at"}`. 1–720 hours |
-| `DELETE /api/rooms/{id}/invites/{code}` | owners | `204`; the code stops working |
-| `POST /api/rooms/join/{code}` | anyone signed in | `{"room_id", "role"}`. `404` unknown code, `410` expired or revoked. A member keeps the higher of their role and the invite's |
+| `POST /api/rooms` `{"room_id", "password"}` | anyone signed in | `201`, the room (below); the creator is its host, role `owner`. `409` if the name is taken. The password is 4–256 characters |
+| `GET /api/rooms` | anyone signed in | my rooms: `[{"room_id", "role", "host", "created_at", "file", "online", "save_requests"}]` |
+| `POST /api/rooms/join` `{"room_id", "password"}` | anyone signed in | the room, joined as `editor` (an existing member keeps their role). `403` `wrong room name or password`, the same for a wrong name. `429` after 10 failures in 5 minutes |
+| `GET /api/rooms/{id}` | members | the room, plus `members: [{"username", "role", "joined_at"}]` |
+| `DELETE /api/rooms/{id}` | owners | `204`. Deletes members, operations, snapshots and the file; open connections close with `4403` |
 | `PATCH /api/rooms/{id}/members/{username}` `{"role"}` | owners | the member's new role |
 | `DELETE /api/rooms/{id}/members/{username}` | owners, or the member themselves | `204` |
+| `PUT /api/rooms/{id}/file?name=<file name>` | owners | the body is the `.blend`, raw. `{"name", "size", "hash", "updated_at"}`. `413` over `COLLAB_MAX_FILE_BYTES`, `422` if it doesn't start like a `.blend` |
+| `GET /api/rooms/{id}/file` | members | the file, with `ETag: "<hash>"`. `404` before the first upload |
+| `POST /api/rooms/{id}/save-requests/{request_id}` `{"approve"}` | owners | `204`; see [Saving](#saving). `404` if the request is gone, `409` if approving with no Blender of theirs in the room |
 
-An invite code works for anyone who has it, any number of times, until it expires or is
-revoked. A room always keeps an owner: demoting or removing the last one is `409`.
+In a room, `file` is `{"name", "size", "hash", "updated_at"}` or `null`; `hash` is the SHA-256 of
+its content. `online` is who has Blender connected right now, `[{"username", "role",
+"connections"}]`, this server process's view. `save_requests` is `[{"id", "username",
+"requested_at"}]` for the room's owners and empty for everyone else. The app polls
+`GET /api/rooms` for all three. A room always keeps an owner: demoting or removing the last one
+is `409`.
 
-**State (#20).** For members, viewers included.
+**State.** For members, viewers included.
 
 | Request | Response |
 |---|---|

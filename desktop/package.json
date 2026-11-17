@@ -1,0 +1,16 @@
+{
+  "name": "collaborative-desktop",
+  "productName": "Collaborative",
+  "private": true,
+  "version": "0.2.0",
+  "description": "The Collaborative app: host and join rooms, and launch Blender into them",
+  "main": "main.cjs",
+  "scripts": {
+    "build:web": "npm --prefix ../web run build",
+    "start": "npm run build:web && electron .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "electron": "38.2.2"
+  }
+}

@@ -1,6 +1,6 @@
 """Convergence through the real relay (#21): signed-in editors on real sockets.
 
-Three editors (the #16-#18 accounts and invites) each drive a `SimClient` (tests/sync/sim.py),
+Three editors (real accounts in a real room) each drive a `SimClient` (tests/sync/sim.py),
 making random edits and sending them over their own socket while the others haven't heard yet.
 Mid-run one disconnects, keeps editing offline, and reconnects (catch-up); at the end a fourth
 editor joins late. At quiescence every scene, the late joiner's and the REST snapshot's agree.
@@ -18,7 +18,7 @@ from contextlib import ExitStack
 import pytest
 
 from app.sync.conflicts import RoomState
-from tests.accounts import bearer, ensure_room, token_for
+from tests.accounts import bearer, ensure_room, join, token_for
 from tests.catchup import read_catch_up
 from tests.sync.sim import SimClient, scene_of
 from tests.sync.test_convergence import ORIGINS, PROPS, _value
@@ -95,14 +95,12 @@ def _edit(rng: random.Random, sim: SimClient, n: int, created: set[str]) -> None
 
 @pytest.fixture
 def editors(client):
-    """Headers for tester (the room's owner) and four invited editors."""
+    """Headers for tester (the room's owner) and three editors who joined it."""
     ensure_room(client, ROOM)
-    code = client.post(f"/api/rooms/{ROOM}/invites", json={"role": "editor"}).json()["code"]
     headers = [dict(client.headers)]
     for name in ("bob", "carol", "dave"):
-        token = token_for(client, name)
-        assert client.post(f"/api/rooms/join/{code}", headers=bearer(token)).status_code == 200
-        headers.append(bearer(token))
+        headers.append(bearer(token_for(client, name)))
+        join(client, ROOM, headers[-1])
     return headers
 
 

@@ -1,29 +1,19 @@
-"""Apply remote `ops` messages to the local scene, without echoing them back out (#6).
+"""Apply remote `ops` messages to the local scene, without echoing them back out.
 
-The receiving half of #5: `apply_message` is what #12's WebSocket client calls, on Blender's
-main thread, for each message the relay forwards.
+`apply_message` runs on Blender's main thread for each message the relay forwards, the room's
+catch-up included: a client with an empty scene ends up with every object.
 
-Joining a room syncs state (#20): the server first sends the room's current state as ordinary
-`ops` messages, which arrive here like any other, so a client with an empty scene ends up with
-every object. Two Blenders no longer need to open the same saved `.blend` file. A local object
-the room doesn't know is offered to it afterwards (`detect.send_unknown_creates`).
-
-Last-writer-wins (#8 / #9): an incoming `set` is only applied if it's newer than the
-last value this client sent or applied for that key, via the shared clock and `Versions`
-in `ordering.py`.
-
-Create / delete (#15): `create` builds a mesh object and `delete` removes one, both idempotent.
-A deleted ID stays tombstoned (`ordering.tombstones`), so any later operation for it is
-skipped whatever its timestamp: deletes win (protocol rule 2). A `set` for an object this
-client doesn't have is dropped, not buffered (protocol rule 9).
+An incoming `set` is applied only if it's newer than the last value this client sent or applied
+for that (object, property): last-writer-wins, through the shared clock and `Versions` in
+ordering.py. `create` and `delete` are idempotent, and a deleted ID stays tombstoned, so any
+later operation for it is skipped whatever its timestamp. A `set` for an object this client
+doesn't have is dropped, not buffered.
 """
 
 import bpy
 
 from . import detect, ids, ordering, timing
 from .log import log
-
-# Fixed table (protocol rule 5): `property` is looked up here, never passed to `setattr`.
 
 
 def _set_location(obj: bpy.types.Object, value: list) -> None:
@@ -48,6 +38,7 @@ def _set_rotation(obj: bpy.types.Object, value: dict) -> None:
         obj.rotation_euler = value["values"]
 
 
+# A fixed table: a received `property` is looked up here, never passed to `setattr`.
 _SETTERS = {
     "location": _set_location,
     "scale": _set_scale,
@@ -89,7 +80,7 @@ def _apply_create(op: dict, objects: dict[str, bpy.types.Object]) -> None:
         obj[ids.COLLAB_ID] = collab_id
         _target_collection(op["collection"]).objects.link(obj)
         if isinstance(op.get("lamport"), int):
-            # A create counts as a write of what it carries (D-081): an older `set` loses.
+            # A create counts as a write of what it carries: an older `set` loses.
             for prop in _SETTERS:
                 ordering.versions.record((collab_id, prop), (op["lamport"], op.get("origin")))
     except Exception as exc:  # noqa: BLE001 - a malformed create must not crash the batch
@@ -121,10 +112,9 @@ def _apply_delete(op: dict, objects: dict[str, bpy.types.Object]) -> None:
 def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | None) -> None:
     """Apply one operation to `objects` (keyed by `collab_id`), or skip it and log why.
 
-    Never raises: an unknown object / kind / property is skipped, and so is a `set` for a
-    deleted object, a `set` that arrives older than the last value this client sent or applied
-    for that (`object`, `property`) key (last-writer-wins, #8 / #9), or one whose setter itself
-    raises (a value that's schema-valid JSON but not a value Blender accepts).
+    Never raises: an unknown object, kind or property is skipped, and so is a `set` for a
+    deleted object, one older than what this client has for that key, or one whose setter
+    raises (schema-valid JSON that Blender still refuses).
     """
     if not isinstance(op, dict):
         log("apply: skip, operation is not an object")
@@ -178,10 +168,9 @@ def _apply_op(op: dict, objects: dict[str, bpy.types.Object], own_origin: str | 
 def apply_message(message: dict) -> None:
     """Apply one parsed `ops` message to the local scene.
 
-    `message` is a plain dict (parsed JSON), not a Pydantic model — the add-on can't use
-    Pydantic. Runs the whole batch inside one `detect.suppressed()` block, which sends
-    any pending local edit first and silently resyncs detect's cache on exit, so nothing
-    applied here is echoed back out as if it were a local change (D-035, the #5 fix).
+    The whole batch runs inside one `detect.suppressed()` block, which sends any pending
+    local edit first and resyncs detect's cache on exit, so nothing applied here is echoed
+    back out as a local change.
     """
     if not isinstance(message, dict) or message.get("v") != 1 or message.get("type") != "ops":
         log("apply: skip, not a v1 ops message")
@@ -191,7 +180,7 @@ def apply_message(message: dict) -> None:
         log("apply: skip, ops is not a list")
         return
 
-    # Look up objects once per batch, rather than ids.find_object per operation.
+    # Looked up once per batch, not once per operation.
     objects: dict[str, bpy.types.Object] = {}
     for obj in bpy.context.scene.objects:
         collab_id = ids.get_id(obj)

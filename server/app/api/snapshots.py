@@ -1,8 +1,8 @@
-"""REST: a room's current state and its operation history (#20).
+"""REST: a room's current state and its operation history.
 
 The socket already sends a joining client the room's state (app.realtime.websocket), so these
 are for anything else that wants to look: the web UI, scripts, debugging. Both read through
-the same functions the socket uses. Both are for the room's members, viewers included (#17).
+the same functions the socket uses. Both are for the room's members, viewers included.
 """
 
 import json

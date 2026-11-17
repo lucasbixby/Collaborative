@@ -370,7 +370,7 @@ def test_uvicorn_stops_promptly_with_a_client_connected(tmp_path):
     try:
         _wait_until(lambda: _healthy(port), timeout=15)
         headers = bearer(_sign_up(port, "shutdown"))
-        _post(port, "/api/rooms", {"room_id": "shutdown"}, headers)
+        _post(port, "/api/rooms", {"room_id": "shutdown", "password": "open sesame"}, headers)
 
         async def _client():
             uri = f"ws://127.0.0.1:{port}/ws/rooms/shutdown"

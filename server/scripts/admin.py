@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Admin commands against the server's own database (#16-#18), for setup, demos and tests.
+"""Admin commands against the server's own database, for setup, demos and tests.
 
-Reads the same COLLAB_DATABASE_URL and COLLAB_SECRET_KEY as the server, so run it from server/
+Reads the same COLLAB_* settings as the server (database, signing key), so run it from server/
 as you do the server, or in the container. Safe while the server is running.
 
     python3 scripts/admin.py create-user <name> [--password P]   (else COLLAB_PASSWORD, else asks)
-    python3 scripts/admin.py create-room <room> --owner <name>
+    python3 scripts/admin.py create-room <room> --owner <name> [--room-password P]
     python3 scripts/admin.py add-member <room> <name> [--role editor|viewer|owner]
     python3 scripts/admin.py token <name>                        prints a login token
     docker compose exec server python scripts/admin.py token <name>
 
-add-member sets the role outright, even if it's lower: this is the admin's tool, not an invite.
+A room made without --room-password can't be joined by password, only through add-member.
+add-member sets the role outright, even if it's lower.
 """
 
 import argparse
@@ -67,12 +68,13 @@ async def create_user(session, username: str, password: str) -> User:
     return user
 
 
-async def create_room(session, room_id: str, owner: str) -> Room:
+async def create_room(session, room_id: str, owner: str, password: str | None = None) -> Room:
     if not re.match(ROOM_ID_PATTERN, room_id):
         raise AdminError("a room id is 1-64 letters, digits, '_' or '-'")
     user = await _user(session, owner)
     now = datetime.now(UTC)
-    room = Room(id=room_id, created_by=user.id, created_at=now)
+    password_hash = passwords.hash_password(password) if password else None
+    room = Room(id=room_id, created_by=user.id, created_at=now, password_hash=password_hash)
     session.add(room)
     session.add(RoomMember(room_id=room_id, user_id=user.id, role=Role.OWNER, joined_at=now))
     try:
@@ -115,7 +117,7 @@ async def _run(args) -> str:
                 user = await create_user(session, args.username, _password(args))
                 return f"created user {user.username!r}"
             if args.command == "create-room":
-                await create_room(session, args.room_id, args.owner)
+                await create_room(session, args.room_id, args.owner, args.room_password)
                 return f"created room {args.room_id!r}, owned by {args.owner.lower()!r}"
             if args.command == "add-member":
                 await add_member(session, args.room_id, args.username, Role(args.role))
@@ -136,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     room = commands.add_parser("create-room", help="add a room, with its owner")
     room.add_argument("room_id")
     room.add_argument("--owner", required=True)
+    room.add_argument("--room-password", help="lets people join by name and password")
     member = commands.add_parser("add-member", help="put a user in a room, or change their role")
     member.add_argument("room_id")
     member.add_argument("username")

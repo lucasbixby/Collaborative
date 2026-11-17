@@ -1,48 +1,77 @@
-"""Operators the user triggers from the panel: join a room, leave a room."""
-
-import json
+"""Joining and leaving the session's room: from the panel's buttons, and automatically when the
+app has just launched Blender into a room."""
 
 import bpy
 from bpy.app.handlers import persistent
 
-from . import apply, client, detect, ordering, panel
+from . import apply, client, detect, ids, ordering, panel, saving, session
 from .log import log
+
+_AUTO_JOIN_DELAY = 0.2  # seconds after the add-on registers, so the file is fully loaded
+
+
+def join_room() -> None:
+    """Connect to the session's room and start syncing. Raises ValueError for a bad room name."""
+    current = session.current
+    client.connect(
+        current.server_url,
+        current.room,
+        apply.apply_message,
+        detect.send_unknown_creates,
+        token=current.token,
+        on_control=saving.handle,
+    )
+    ids.assign_shared_ids(current.room)
+    # stop() first: start() does nothing while detection is already running, which would leave
+    # edits going to whatever the previous room wired up.
+    detect.stop()
+    if current.can_edit:
+        detect.start(client.send)
+    panel.start_status_watch()
+
+
+def leave_room() -> None:
+    detect.stop()
+    client.disconnect()
+    panel.stop_status_watch()
+
+
+def _auto_join() -> None:
+    try:
+        join_room()
+    except ValueError as exc:
+        log("couldn't join:", exc)
+
+
+def join_when_ready() -> None:
+    """Join the session's room once Blender has finished starting, if the app set one."""
+    if session.current.room and not bpy.app.timers.is_registered(_auto_join):
+        bpy.app.timers.register(_auto_join, first_interval=_AUTO_JOIN_DELAY)
 
 
 class COLLAB_OT_join_room(bpy.types.Operator):
-    """Connect to the server and start sending/receiving operations for this room."""
+    """Connect to the room again"""
 
     bl_idname = "collaborative.join_room"
-    bl_label = "Join room"
+    bl_label = "Rejoin room"
 
     @classmethod
     def poll(cls, context) -> bool:
-        # "refused" too: after signing in, or being invited, Join is how to try again.
-        return client.status() in ("disconnected", "refused")
+        # "refused" too: once access is sorted out in the app, this is how to try again.
+        return bool(session.current.room) and client.status() in ("disconnected", "refused")
 
     def execute(self, context):
-        prefs = context.preferences.addons[__package__].preferences
-        room_id = context.window_manager.room_id
         try:
-            client.connect(
-                prefs.server_url,
-                room_id,
-                apply.apply_message,
-                detect.send_unknown_creates,
-                token=prefs.auth_token,
-            )
+            join_room()
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        # stop() first: if the old Start detection dev aid (or a previous room) left
-        # detection running, start() would be a no-op and edits would never be sent.
-        detect.stop()
-        detect.start(client.send)
-        panel.start_status_watch()
         return {"FINISHED"}
 
 
 class COLLAB_OT_leave_room(bpy.types.Operator):
+    """Stop syncing with the room. Your scene stays as it is"""
+
     bl_idname = "collaborative.leave_room"
     bl_label = "Leave room"
 
@@ -51,59 +80,21 @@ class COLLAB_OT_leave_room(bpy.types.Operator):
         return client.status() != "disconnected"
 
     def execute(self, context):
-        _leave_room()
+        leave_room()
         return {"FINISHED"}
-
-
-def _leave_room() -> None:
-    """The shared Leave action: used by the operator above and by `_on_load_pre`."""
-    detect.stop()
-    client.disconnect()
-    panel.stop_status_watch()
 
 
 @persistent
 def _on_load_pre(*_args) -> None:
-    """Opening another file would otherwise leave the client connected while detect's
-    cache and the scene's `collab_id`s still belong to the file being replaced (#13).
-
-    Tombstones belong to that file too (#15): reopening a saved `.blend` legitimately brings
-    back objects deleted since it was saved, and they must keep their IDs (D-045).
-    """
+    """A different file is about to load: detect's cache, the object IDs and the tombstones all
+    belong to the one being replaced, so leave the room rather than sync the wrong scene."""
     if client.status() != "disconnected":
         log("leaving the room: a different file is being opened")
-    _leave_room()
+    leave_room()
     ordering.tombstones.clear()
 
 
-class COLLAB_OT_apply_from_clipboard(bpy.types.Operator):
-    """Dev aid (#6): parse the clipboard as one `ops` message and apply it to the local
-    scene. Accepts a line copied straight from the detection log (its `[collab A ...]`
-    prefix is dropped). Still handy for checking last-writer-wins (#8/#9) by hand."""
-
-    bl_idname = "collaborative.apply_from_clipboard"
-    bl_label = "Apply from clipboard"
-
-    def execute(self, context):
-        text = context.window_manager.clipboard
-        start = text.find("{")
-        if start == -1:
-            self.report({"ERROR"}, "Clipboard has no JSON object")
-            return {"CANCELLED"}
-        try:
-            message = json.loads(text[start:])
-        except json.JSONDecodeError as exc:
-            self.report({"ERROR"}, f"Invalid JSON: {exc}")
-            return {"CANCELLED"}
-        apply.apply_message(message)
-        return {"FINISHED"}
-
-
-_classes = (
-    COLLAB_OT_join_room,
-    COLLAB_OT_leave_room,
-    COLLAB_OT_apply_from_clipboard,
-)
+_classes = (COLLAB_OT_join_room, COLLAB_OT_leave_room)
 
 
 def register() -> None:
@@ -113,6 +104,8 @@ def register() -> None:
 
 
 def unregister() -> None:
+    if bpy.app.timers.is_registered(_auto_join):
+        bpy.app.timers.unregister(_auto_join)
     if _on_load_pre in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(_on_load_pre)
     for cls in reversed(_classes):

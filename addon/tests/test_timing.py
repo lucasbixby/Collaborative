@@ -92,10 +92,7 @@ def test_a_real_edit_records_the_sending_stages_in_order(addon, timing, relay):
     obj = bpy.data.objects.new("Cube", bpy.data.meshes.new("Cube"))
     bpy.context.scene.collection.objects.link(obj)
     bpy.context.view_layer.update()
-    bpy.context.window_manager.room_id = "room-a"
-    bpy.context.preferences.addons["collaborative_blender"].preferences.server_url = (
-        f"ws://localhost:{relay.port}"
-    )
+    addon.session.configure(server_url=f"ws://localhost:{relay.port}", room="room-a")
     bpy.ops.collaborative.join_room()
     wait_until(lambda: addon.client.status() == "connected")
 

@@ -82,3 +82,18 @@ def test_room_errors(admin):
     assert no_room.stderr == "error: no room 'nowhere'\n"
     bad_id = admin("create-room", "has space", "--owner", "alice", check=False)
     assert bad_id.returncode == 1 and "1-64" in bad_id.stderr
+
+
+def test_a_room_password_lets_others_join_by_name(admin, database_url):
+    for name in ("alice", "bob"):
+        admin("create-user", name)
+    admin("create-room", "studio", "--owner", "alice", "--room-password", "open sesame")
+    admin("create-room", "closed", "--owner", "alice")
+    bob = bearer(admin("token", "bob").stdout.strip())
+
+    with TestClient(create_app(database_url)) as test_client:
+        joined = test_client.post(
+            "/api/rooms/join", json={"room_id": "studio", "password": "open sesame"}, headers=bob
+        )
+        closed = test_client.post("/api/rooms/join", json={"room_id": "closed", "password": ""}, headers=bob)
+    assert (joined.status_code, closed.status_code) == (200, 403)

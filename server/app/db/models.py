@@ -1,17 +1,8 @@
-"""SQLAlchemy models: users, rooms, room members, operation log, snapshots."""
+"""SQLAlchemy models: users, rooms and their members, the operation log, snapshots."""
 
 from datetime import UTC, datetime
 
-from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Index,
-    Integer,
-    String,
-    Text,
-)
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -21,9 +12,8 @@ class Base(DeclarativeBase):
 
 
 class UTCDateTime(TypeDecorator):
-    """A timestamp that reads back in UTC. SQLite keeps no time zone, so without this a time
-    written as UTC comes back naive, and comparing it with `datetime.now(UTC)` (an invite's
-    expiry) raises."""
+    """A timestamp that reads back in UTC. SQLite keeps no time zone, so without this a stored
+    UTC time comes back naive and can't be compared with `datetime.now(UTC)`."""
 
     impl = DateTime(timezone=True)
     cache_ok = True
@@ -35,26 +25,30 @@ class UTCDateTime(TypeDecorator):
 
 
 class User(Base):
-    """An account (#16). `password_hash` is scrypt's output with its salt and parameters
-    (app.auth.passwords), never the password."""
-
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(32), unique=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str] = mapped_column(String(255))  # scrypt, see app.auth.passwords
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
 class Room(Base):
-    """A room (#18). Its id is the human-readable name clients join by, the same pattern the
-    socket's URL takes. Who may do what is in RoomMember; `created_by` is only a record."""
+    """A room. Its id is the name people type to join it. `created_by` is the host shown in the
+    UI; who may do what is decided by RoomMember roles. The file columns describe the room's
+    project file (the host's .blend) in the asset store, or are all None before an upload."""
 
     __tablename__ = "rooms"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    # None for a room made by scripts/admin.py without one: joinable only through add-member.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    file_updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
 
 class RoomMember(Base):
@@ -68,26 +62,9 @@ class RoomMember(Base):
     joined_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
-class Invite(Base):
-    """An invite code for a room (#18). Only the code's SHA-256 is stored: the code is shown
-    once, to the owner who made it, so the database alone can't be used to join. A code can be
-    used by any number of people until it expires or is revoked."""
-
-    __tablename__ = "invites"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), index=True)
-    role: Mapped[str] = mapped_column(String(16))
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
-    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
-    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
-
-
 class OriginOwner(Base):
-    """Which user an `origin` belongs to (#17, D-063): the first user to send as it. Kept in
-    the database so a restart doesn't let someone else claim it."""
+    """Which user an `origin` belongs to: the first user to send as it. In the database so a
+    restart doesn't let someone else claim it."""
 
     __tablename__ = "origin_owners"
 
@@ -97,13 +74,8 @@ class OriginOwner(Base):
 
 
 class Operation(Base):
-    """One relayed operation (#19).
-
-    `seq` is the server's arrival order and the catch-up cursor, not `lamport`: two operations
-    can share a Lamport and a late one can carry an old one, while "everything after this seq"
-    is exact. `sqlite_autoincrement` means a seq is never reused, even if the newest rows are
-    deleted later, which a plain SQLite rowid doesn't promise (D-068).
-    """
+    """One relayed operation. `seq` is the server's arrival order and the catch-up cursor.
+    AUTOINCREMENT means a seq is never reused, which a plain SQLite rowid doesn't promise."""
 
     __tablename__ = "operations"
     __table_args__ = (
@@ -118,12 +90,12 @@ class Operation(Base):
     kind: Mapped[str] = mapped_column(String(16))
     object: Mapped[str] = mapped_column(String(36))
     payload: Mapped[str] = mapped_column(Text)  # the operation as validated JSON
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
 class Snapshot(Base):
-    """A room's folded state up to and including `seq` (#20): a cache over the log, which is
-    never trimmed, so any snapshot can be rebuilt from it. `state` is `RoomState.to_json()`."""
+    """A room's folded state up to and including `seq`: a cache over the log, so any snapshot
+    can be rebuilt from it. `state` is `RoomState.to_json()`."""
 
     __tablename__ = "snapshots"
     __table_args__ = (Index("ix_snapshots_room_seq", "room_id", "seq"),)
@@ -132,4 +104,4 @@ class Snapshot(Base):
     room_id: Mapped[str] = mapped_column(String(64))
     seq: Mapped[int] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)

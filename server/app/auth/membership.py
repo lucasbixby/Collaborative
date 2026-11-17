@@ -1,4 +1,4 @@
-"""Who is in which room, with which role (#17, #18): the lookups the REST routes and the relay
+"""Who is in which room, with which role: the lookups the REST routes and the relay
 share, and the `member_of` dependency for routes under /api/rooms/{room_id}.
 """
 

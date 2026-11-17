@@ -1,78 +1,76 @@
-// The shell: the header with who's signed in, and the page for the current URL. Signed out,
-// every URL shows the sign-in form, so signing in lands you on the page you asked for.
-import { useAuth } from './auth'
-import { JoinPage } from './pages/JoinPage'
-import { RoomPage } from './pages/RoomPage'
-import { RoomsPage } from './pages/RoomsPage'
-import { SignInPage } from './pages/SignInPage'
-import { Link } from './components/Link'
-import { useLocation } from './navigation'
+// The shell: the header with who's signed in, then the sign-in page or the dashboard.
+import { useState } from 'react'
 
-function Page({ path }: { path: string }) {
-  const room = path.match(/^\/rooms\/([^/]+)\/?$/)
-  if (room) return <RoomPage roomId={decodeURIComponent(room[1])} />
-  const join = path.match(/^\/join\/([^/]+)\/?$/)
-  if (join) return <JoinPage code={decodeURIComponent(join[1])} />
-  if (path === '/') return <RoomsPage />
-  return (
-    <section className="card">
-      <h1>Not found</h1>
-      <p>
-        <Link to="/">Go to my rooms</Link>
-      </p>
-    </section>
-  )
-}
+import logo from './assets/logo.png'
+import { useAuth } from './auth'
+import { BackgroundField } from './components/BackgroundField'
+import { SettingsDialog } from './components/SettingsDialog'
+import { Dashboard } from './pages/Dashboard'
+import { SignInPage } from './pages/SignInPage'
+import { desktop } from './platform'
 
 function App() {
   const { user, checking, checkError, signOut } = useAuth()
-  const path = useLocation().split('?')[0]
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const openSettings = desktop ? () => setSettingsOpen(true) : undefined
 
   let content
   if (checkError) {
     content = (
-      <section className="card narrow">
+      <section className="notice glass">
         <p className="error" role="alert">
           {checkError}
         </p>
-        <button type="button" onClick={() => window.location.reload()}>
-          Try again
-        </button>
+        <div className="actions">
+          <button type="button" className="primary" onClick={() => window.location.reload()}>
+            Try again
+          </button>
+          {openSettings && (
+            <button type="button" className="outline" onClick={openSettings}>
+              Settings
+            </button>
+          )}
+        </div>
       </section>
     )
   } else if (checking) {
     content = <p className="muted">Loading…</p>
   } else if (!user) {
-    content = (
-      <SignInPage
-        intro={
-          path.startsWith('/join/')
-            ? "You've been invited to a room. Sign in, or create an account, to join it."
-            : undefined
-        }
-      />
-    )
+    content = <SignInPage onSettings={openSettings} />
   } else {
-    content = <Page key={path} path={path} />
+    content = <Dashboard />
   }
 
   return (
-    <>
-      <header className="site-header">
-        <Link to="/">Collaborative</Link>
-        {user && (
-          <span className="who">
-            <span>
-              Signed in as <strong>{user.username}</strong>
-            </span>
-            <button type="button" className="secondary" onClick={signOut}>
-              Sign out
-            </button>
+    <div className="page">
+      <BackgroundField belowWordmark={!user} />
+      {user && (
+        <header className="site-header glass">
+          <span className="brand">
+            <img src={logo} alt="" />
+            Collaborative
           </span>
-        )}
-      </header>
+          <nav>
+            <span className="caption">( {user.username} )</span>
+            {openSettings && (
+              <button type="button" className="quiet" onClick={openSettings}>
+                Settings
+              </button>
+            )}
+            <button type="button" className="quiet" onClick={signOut}>
+              Log out
+            </button>
+          </nav>
+        </header>
+      )}
       <main>{content}</main>
-    </>
+      {settingsOpen && (
+        <SettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          onSaved={() => window.location.reload()}
+        />
+      )}
+    </div>
   )
 }
 

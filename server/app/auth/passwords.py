@@ -1,4 +1,4 @@
-"""Password hashing with the standard library's scrypt (#16): no extra dependency.
+"""Password hashing with the standard library's scrypt: no extra dependency.
 
 A stored hash is `scrypt$<n>$<r>$<p>$<salt>$<key>` (salt and key in base64), so the parameters
 travel with each hash: raising them later only affects new passwords, and old hashes still

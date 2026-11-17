@@ -1,13 +1,13 @@
-// The UI's main flows against a fake server (#22).
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+// The UI's main flows in a browser, against a fake server. The desktop app's extras (launching
+// Blender, the native file picker) are covered in desktop.test.tsx.
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
 
 import App from '../App'
 import { AuthProvider } from '../AuthProvider'
-import { ALICE, fakeServer, signedIn } from './fakeServer'
+import { ALICE, fakeServer, room, signedIn } from './fakeServer'
 
-function renderApp(path = '/') {
-  window.history.replaceState(null, '', path)
+function renderApp() {
   return render(
     <AuthProvider>
       <App />
@@ -19,313 +19,411 @@ function fill(label: RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } })
 }
 
-const STUDIO = {
-  room_id: 'studio',
-  role: 'owner',
-  created_at: '2026-11-09T12:00:00Z',
-  members: [
-    { username: 'alice', role: 'owner', joined_at: '2026-11-09T12:00:00Z' },
-    { username: 'bob', role: 'editor', joined_at: '2026-11-09T12:05:00Z' },
-  ],
-}
+const click = (name: string | RegExp) => fireEvent.click(screen.getByRole('button', { name }))
+const me = { 'GET /api/auth/me': { status: 200, body: ALICE } }
+const members = (...names: [string, string][]) => names.map(([username, role]) => ({ username, role, joined_at: '' }))
 
-const roomRoutes = (users: unknown[] = []) => ({
-  'GET /api/auth/me': { status: 200, body: ALICE },
-  'GET /api/rooms/studio': { status: 200, body: STUDIO },
-  'GET /api/rooms/studio/presence': { status: 200, body: { room_id: 'studio', users } },
-})
-
-describe('sign in', () => {
-  it('signs in and shows my rooms, sending the token from then on', async () => {
+describe('logging in', () => {
+  it('logs in and shows my rooms, sending the token from then on', async () => {
     const server = fakeServer({
       'POST /api/auth/login': { status: 200, body: { token: 'tok-alice', user: ALICE } },
-      'GET /api/rooms': { status: 200, body: [{ room_id: 'studio', role: 'owner', created_at: '' }] },
+      'GET /api/rooms': { status: 200, body: [room()] },
     })
     renderApp()
 
     fill(/username/i, 'alice')
     fill(/password/i, 'correct horse')
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    click('Log in')
 
-    expect(await screen.findByRole('link', { name: 'studio' })).toBeTruthy()
-    expect(screen.getByText('alice')).toBeTruthy() // in the header
+    expect(await screen.findByRole('button', { name: /studio/ })).toBeTruthy()
+    expect(screen.getByText('( alice )')).toBeTruthy()
     expect(server.calls[0].body).toEqual({ username: 'alice', password: 'correct horse' })
     expect(server.calls[1].authorization).toBe('Bearer tok-alice')
     expect(window.sessionStorage.getItem('collab.token')).toBe('tok-alice')
   })
 
-  it("shows the server's message when sign-in fails, and stays signed out", async () => {
-    fakeServer({
-      'POST /api/auth/login': { status: 401, body: { detail: 'wrong username or password' } },
-    })
+  it("shows the server's message when it fails, and stays logged out", async () => {
+    fakeServer({ 'POST /api/auth/login': { status: 401, body: { detail: 'wrong username or password' } } })
     renderApp()
 
     fill(/username/i, 'alice')
     fill(/password/i, 'nope')
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    click('Log in')
 
-    expect((await screen.findByRole('alert')).textContent).toBe('wrong username or password')
-    expect(screen.getByRole('heading', { name: 'Sign in' })).toBeTruthy()
+    expect((await screen.findByRole('alert')).textContent).toBe('Wrong username or password')
     expect(window.sessionStorage.getItem('collab.token')).toBeNull()
   })
 
-  it('registers, then signs in, and shows validation messages field by field', async () => {
-    fakeServer({
-      'POST /api/auth/register': ({ body }) =>
-        (body as { password: string }).password.length < 8
-          ? {
-              status: 422,
-              body: { detail: [{ loc: ['body', 'password'], msg: 'String should have at least 8 characters' }] },
-            }
-          : { status: 201, body: ALICE },
+  it('creates an account, then logs in with it', async () => {
+    const server = fakeServer({
+      'POST /api/auth/register': { status: 201, body: ALICE },
       'POST /api/auth/login': { status: 200, body: { token: 'tok-alice', user: ALICE } },
       'GET /api/rooms': { status: 200, body: [] },
     })
     renderApp()
-    fireEvent.click(screen.getByRole('button', { name: 'Create an account' }))
 
-    fill(/username/i, 'alice')
-    fill(/password/i, 'short')
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'password: String should have at least 8 characters',
-    )
-
-    fill(/password/i, 'long enough')
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
-    expect(await screen.findByText(/No rooms yet/)).toBeTruthy()
-  })
-})
-
-describe('signing out', () => {
-  it('any 401 signs out and shows the sign-in page, not a crash', async () => {
-    signedIn('expired')
-    fakeServer({
-      'GET /api/auth/me': { status: 401, body: { detail: 'invalid or expired token; sign in again' } },
-    })
-    renderApp('/rooms/studio')
-
-    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeTruthy()
-    expect(window.sessionStorage.getItem('collab.token')).toBeNull()
-    expect(window.location.pathname).toBe('/rooms/studio') // signing in lands back here
-  })
-
-  it('a 401 later on, mid-page, signs out too', async () => {
-    signedIn()
-    fakeServer({
-      'GET /api/auth/me': { status: 200, body: ALICE },
-      'GET /api/rooms': { status: 401, body: { detail: 'invalid or expired token; sign in again' } },
-    })
-    renderApp()
-
-    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeTruthy()
-  })
-
-  it('Sign out forgets the token', async () => {
-    signedIn()
-    fakeServer({
-      'GET /api/auth/me': { status: 200, body: ALICE },
-      'GET /api/rooms': { status: 200, body: [] },
-    })
-    renderApp()
-    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
-
-    expect(screen.getByRole('heading', { name: 'Sign in' })).toBeTruthy()
-    expect(window.sessionStorage.getItem('collab.token')).toBeNull()
-  })
-})
-
-describe('rooms', () => {
-  it('a taken room id says so', async () => {
-    signedIn()
-    fakeServer({
-      'GET /api/auth/me': { status: 200, body: ALICE },
-      'GET /api/rooms': { status: 200, body: [] },
-      'POST /api/rooms': { status: 409, body: { detail: "room 'demo' exists" } },
-    })
-    renderApp()
-
-    await screen.findByLabelText(/room id/i)
-    fill(/room id/i, 'demo')
-    fireEvent.click(await screen.findByRole('button', { name: 'Create room' }))
-
-    expect((await screen.findByRole('alert')).textContent).toBe('"demo" is taken. Pick another name.')
-  })
-
-  it('checks the room-id rule as you type', async () => {
-    signedIn()
-    fakeServer({
-      'GET /api/auth/me': { status: 200, body: ALICE },
-      'GET /api/rooms': { status: 200, body: [] },
-    })
-    renderApp()
-
-    await screen.findByLabelText(/room id/i)
-    fill(/room id/i, 'has space')
-
-    const button = (await screen.findByRole('button', { name: 'Create room' })) as HTMLButtonElement
-    expect(button.disabled).toBe(true)
-    expect(screen.getByLabelText(/room id/i).getAttribute('aria-invalid')).toBe('true')
-  })
-
-  it('creating a room goes to it', async () => {
-    signedIn()
-    fakeServer({
-      ...roomRoutes(),
-      'GET /api/rooms': { status: 200, body: [] },
-      'POST /api/rooms': { status: 201, body: { room_id: 'studio', role: 'owner', created_at: '' } },
-    })
-    renderApp()
-
-    await screen.findByLabelText(/room id/i)
-    fill(/room id/i, 'studio')
-    fireEvent.click(await screen.findByRole('button', { name: 'Create room' }))
-
-    expect(await screen.findByRole('heading', { name: /studio/ })).toBeTruthy()
-    expect(window.location.pathname).toBe('/rooms/studio')
-  })
-})
-
-describe('room page', () => {
-  it('creates an invite and copies its link, then revokes it', async () => {
-    signedIn()
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
-    const server = fakeServer({
-      ...roomRoutes(),
-      'POST /api/rooms/studio/invites': {
-        status: 201,
-        body: { code: 'abc123', room_id: 'studio', role: 'viewer', expires_at: '2026-11-10T12:00:00Z' },
-      },
-      'DELETE /api/rooms/studio/invites/abc123': { status: 204 },
-    })
-    renderApp('/rooms/studio')
-
-    fireEvent.change(await screen.findByLabelText('Role'), { target: { value: 'viewer' } })
-    fill(/expires in/i, '48')
-    fireEvent.click(screen.getByRole('button', { name: 'Create invite link' }))
-
-    const link = `${window.location.origin}/join/abc123`
-    expect(await screen.findByText(link)).toBeTruthy()
-    expect(server.calls.find((call) => call.method === 'POST')?.body).toEqual({
-      role: 'viewer',
-      expires_in_hours: 48,
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
-    expect(writeText).toHaveBeenCalledWith(link)
-    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }))
-    expect(await screen.findByText(/revoked/)).toBeTruthy()
-  })
-
-  it('shows who is connected, and polls while visible', async () => {
-    signedIn()
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    let users = [{ username: 'bob', role: 'editor', connections: 2 }]
-    const server = fakeServer({
-      ...roomRoutes(),
-      'GET /api/rooms/studio/presence': () => ({ status: 200, body: { room_id: 'studio', users } }),
-    })
-    renderApp('/rooms/studio')
-
-    const presence = await screen.findByRole('region', { name: 'Connected now' })
-    await within(presence).findByText('bob')
-    expect(within(presence).getByText(/2 connections/)).toBeTruthy()
-
-    users = []
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000)
-    })
-    expect(await within(presence).findByText(/Nobody is connected/)).toBeTruthy()
-    expect(server.calls.filter((call) => call.path.endsWith('/presence')).length).toBeGreaterThan(1)
-    vi.useRealTimers()
-  })
-
-  it('shows the Blender details with copy buttons', async () => {
-    signedIn()
-    fakeServer(roomRoutes())
-    renderApp('/rooms/studio')
-
-    expect(await screen.findByRole('button', { name: 'Copy room ID' })).toBeTruthy()
-    expect(screen.getByText(`ws://${window.location.host}`)).toBeTruthy()
-    expect(screen.getByText(/sign in to the add-on with this same account/)).toBeTruthy()
-  })
-
-  it("shows the server's error when the last owner can't be removed", async () => {
-    signedIn()
-    fakeServer({
-      ...roomRoutes(),
-      'DELETE /api/rooms/studio/members/alice': {
-        status: 409,
-        body: { detail: 'a room needs an owner: make someone else owner first' },
-      },
-    })
-    renderApp('/rooms/studio')
-
-    const removes = await screen.findAllByRole('button', { name: 'Remove' })
-    fireEvent.click(removes[0])
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' }))
-
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'a room needs an owner: make someone else owner first',
-    )
-  })
-
-  it('an owner changes a role', async () => {
-    signedIn()
-    const server = fakeServer({
-      ...roomRoutes(),
-      'PATCH /api/rooms/studio/members/bob': { status: 200, body: { username: 'bob', role: 'viewer', joined_at: '' } },
-    })
-    renderApp('/rooms/studio')
-
-    fireEvent.change(await screen.findByLabelText('Role for bob'), { target: { value: 'viewer' } })
-
-    await waitFor(() => expect(server.calls.some((call) => call.method === 'PATCH')).toBe(true))
-    expect(server.calls.find((call) => call.method === 'PATCH')?.body).toEqual({ role: 'viewer' })
-  })
-})
-
-describe('join by link', () => {
-  it('signed out: sign in first, then join and land on the room', async () => {
-    const server = fakeServer({
-      ...roomRoutes(),
-      'POST /api/auth/login': { status: 200, body: { token: 'tok-alice', user: ALICE } },
-      'POST /api/rooms/join/abc123': { status: 200, body: { room_id: 'studio', role: 'editor' } },
-    })
-    renderApp('/join/abc123')
-
-    expect(screen.getByText(/You've been invited to a room/)).toBeTruthy()
+    click('Create an account')
     fill(/username/i, 'alice')
     fill(/password/i, 'correct horse')
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    click('Create account')
 
-    expect(await screen.findByRole('heading', { name: /studio/ })).toBeTruthy()
-    expect(window.location.pathname).toBe('/rooms/studio')
-    const joins = server.calls.filter((call) => call.path === '/api/rooms/join/abc123')
-    expect(joins).toHaveLength(1)
-    expect(joins[0].authorization).toBe('Bearer tok-alice')
+    expect(await screen.findByText(/No rooms yet/)).toBeTruthy()
+    expect(server.calls.map((call) => call.path)).toEqual(['/api/auth/register', '/api/auth/login', '/api/rooms'])
   })
 
-  it('an expired link says so', async () => {
-    signedIn()
+  it('shows a validation error from registering as "field: message"', async () => {
     fakeServer({
-      'GET /api/auth/me': { status: 200, body: ALICE },
-      'POST /api/rooms/join/old': { status: 410, body: { detail: 'this invite has expired' } },
+      'POST /api/auth/register': {
+        status: 422,
+        body: { detail: [{ loc: ['body', 'password'], msg: 'String should have at least 8 characters' }] },
+      },
     })
-    renderApp('/join/old')
+    renderApp()
 
-    expect((await screen.findByRole('alert')).textContent).toBe('this invite has expired')
+    click('Create an account')
+    fill(/username/i, 'alice')
+    fill(/password/i, 'short')
+    click('Create account')
+
+    expect((await screen.findByRole('alert')).textContent).toBe('password: String should have at least 8 characters')
   })
-})
 
-describe('server down', () => {
-  it('says the server is unreachable instead of a blank page', async () => {
+  it('logs out when a stored token is rejected, and on Log out', async () => {
+    signedIn('stale')
+    fakeServer({ 'GET /api/auth/me': { status: 401, body: { detail: 'invalid or expired token' } } })
+    const first = renderApp()
+    expect(await screen.findByRole('button', { name: 'Log in' })).toBeTruthy()
+    expect(window.sessionStorage.getItem('collab.token')).toBeNull()
+    first.unmount()
+
     signedIn()
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    fakeServer({ ...me, 'GET /api/rooms': { status: 200, body: [] } })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Log out' }))
+    expect(await screen.findByRole('button', { name: 'Log in' })).toBeTruthy()
+    expect(window.sessionStorage.getItem('collab.token')).toBeNull()
+  })
+
+  it('says so when the server is down, with a way to try again', async () => {
+    signedIn()
+    globalThis.fetch = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch
     renderApp()
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/Can't reach the server/)
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+})
+
+describe('the dashboard', () => {
+  it('separates rooms I host from rooms I joined, with who is in each', async () => {
+    signedIn()
+    fakeServer({
+      ...me,
+      'GET /api/rooms': {
+        status: 200,
+        body: [
+          room({ online: [{ username: 'bob', role: 'editor', connections: 1 }, { username: 'carol', role: 'editor', connections: 1 }] }),
+          room({ room_id: 'garage', role: 'editor', host: 'bob' }),
+        ],
+      },
+    })
+    renderApp()
+
+    const hosting = within(await screen.findByRole('region', { name: 'Hosting' }))
+    const joined = within(screen.getByRole('region', { name: 'Joined' }))
+    expect(hosting.getByText('bob and carol are in the room')).toBeTruthy()
+    expect(hosting.getByText('You host this room')).toBeTruthy()
+    expect(joined.getByText('Hosted by bob')).toBeTruthy()
+    expect(joined.getByText('Empty')).toBeTruthy()
+  })
+
+  it('keeps the list fresh while the window is visible', async () => {
+    signedIn()
+    const online: unknown[] = []
+    const server = fakeServer({ ...me, 'GET /api/rooms': () => ({ status: 200, body: [room({ online: [...online] })] }) })
+    renderApp()
+    expect(await screen.findByText('Empty')).toBeTruthy()
+
+    online.push({ username: 'bob', role: 'editor', connections: 1 })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    expect(await screen.findByText('bob is in the room')).toBeTruthy()
+    expect(server.calls.filter((call) => call.path === '/api/rooms').length).toBe(2)
+  })
+})
+
+describe('hosting a room', () => {
+  it('creates the room, uploads the chosen file, and opens the room', async () => {
+    signedIn()
+    const rooms: unknown[] = []
+    const server = fakeServer({
+      ...me,
+      'GET /api/rooms': () => ({ status: 200, body: rooms }),
+      'POST /api/rooms': () => {
+        rooms.push(room())
+        return { status: 201, body: room({ file: null }) }
+      },
+      'PUT /api/rooms/studio/file?name=scene.blend': { status: 200, body: room().file },
+      'GET /api/rooms/studio': { status: 200, body: { ...room(), members: members(['alice', 'owner']) } },
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Host room' }))
+
+    const file = new File(['BLENDER-v502'], 'scene.blend')
+    fireEvent.change(screen.getByLabelText('Blender file'), { target: { files: [file] } })
+    fill(/room name/i, 'studio')
+    fill(/password/i, 'open sesame')
+    click('Create room')
+
+    expect(await screen.findByRole('dialog', { name: 'studio' })).toBeTruthy()
+    const created = server.calls.find((call) => call.method === 'POST' && call.path === '/api/rooms')
+    expect(created?.body).toEqual({ room_id: 'studio', password: 'open sesame' })
+    expect(server.calls.find((call) => call.method === 'PUT')?.body).toBe(file)
+  })
+
+  it('needs a file and a valid name before it can be created', async () => {
+    signedIn()
+    fakeServer({ ...me, 'GET /api/rooms': { status: 200, body: [] } })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Host room' }))
+
+    const create = screen.getByRole('button', { name: 'Create room' }) as HTMLButtonElement
+    expect(create.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Blender file'), { target: { files: [new File(['x'], 'a.blend')] } })
+    fill(/room name/i, 'has a space')
+    expect(create.disabled).toBe(true)
+    fill(/room name/i, 'studio')
+    expect(create.disabled).toBe(false)
+  })
+
+  it('says a taken name is taken', async () => {
+    signedIn()
+    fakeServer({
+      ...me,
+      'GET /api/rooms': { status: 200, body: [] },
+      'POST /api/rooms': { status: 409, body: { detail: "room 'studio' exists" } },
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Host room' }))
+    fireEvent.change(screen.getByLabelText('Blender file'), { target: { files: [new File(['x'], 'a.blend')] } })
+    fill(/room name/i, 'studio')
+    fill(/password/i, 'open sesame')
+    click('Create room')
+
+    expect((await screen.findByRole('alert')).textContent).toBe('"studio" is taken. Pick another name.')
+  })
+
+  it("takes the room back if its file can't be uploaded", async () => {
+    signedIn()
+    const server = fakeServer({
+      ...me,
+      'GET /api/rooms': { status: 200, body: [] },
+      'POST /api/rooms': { status: 201, body: room({ file: null }) },
+      'PUT /api/rooms/studio/file?name=a.txt': { status: 422, body: { detail: 'not a .blend file' } },
+      'DELETE /api/rooms/studio': { status: 204 },
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Host room' }))
+    fireEvent.change(screen.getByLabelText('Blender file'), { target: { files: [new File(['x'], 'a.txt')] } })
+    fill(/room name/i, 'studio')
+    fill(/password/i, 'open sesame')
+    click('Create room')
+
+    expect((await screen.findByRole('alert')).textContent).toBe('Not a .blend file')
+    expect(server.calls.some((call) => call.method === 'DELETE' && call.path === '/api/rooms/studio')).toBe(true)
+  })
+})
+
+describe('joining a room', () => {
+  it('joins with the name and password and opens the room', async () => {
+    signedIn()
+    const rooms: unknown[] = []
+    const theirs = room({ role: 'editor', host: 'bob' })
+    const server = fakeServer({
+      ...me,
+      'GET /api/rooms': () => ({ status: 200, body: rooms }),
+      'POST /api/rooms/join': () => {
+        rooms.push(theirs)
+        return { status: 200, body: theirs }
+      },
+      'GET /api/rooms/studio': { status: 200, body: { ...theirs, members: members(['bob', 'owner'], ['alice', 'editor']) } },
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Join room' }))
+
+    fill(/room name/i, ' studio ')
+    fill(/password/i, 'open sesame')
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Join room' }))
+
+    const opened = within(await screen.findByRole('dialog', { name: 'studio' }))
+    expect(opened.getByText('( Hosted by bob )')).toBeTruthy()
+    expect(server.calls.find((call) => call.path === '/api/rooms/join')?.body).toEqual({
+      room_id: 'studio',
+      password: 'open sesame',
+    })
+  })
+
+  it("shows the server's refusal", async () => {
+    signedIn()
+    fakeServer({
+      ...me,
+      'GET /api/rooms': { status: 200, body: [] },
+      'POST /api/rooms/join': { status: 403, body: { detail: 'wrong room name or password' } },
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Join room' }))
+    fill(/room name/i, 'studio')
+    fill(/password/i, 'nope')
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Join room' }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe('Wrong room name or password')
+  })
+})
+
+describe('a room', () => {
+  const detail = { ...room(), members: members(['alice', 'owner'], ['bob', 'editor']) }
+  const routes = {
+    ...me,
+    'GET /api/rooms': { status: 200, body: [room()] },
+    'GET /api/rooms/studio': { status: 200, body: detail },
+  }
+
+  async function open() {
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /studio/ }))
+    return within(await screen.findByRole('dialog', { name: 'studio' }))
+  }
+
+  it('in a browser, points to the desktop app for launching Blender', async () => {
+    signedIn()
+    fakeServer(routes)
+    const dialog = await open()
+
+    expect(dialog.getByText(/desktop app to launch Blender/)).toBeTruthy()
+    expect(dialog.queryByRole('button', { name: 'Launch Blender' })).toBeNull()
+  })
+
+  it('lets the host change what someone can do, and remove them after confirming', async () => {
+    signedIn()
+    const server = fakeServer({
+      ...routes,
+      'PATCH /api/rooms/studio/members/bob': { status: 200, body: { username: 'bob', role: 'viewer', joined_at: '' } },
+      'DELETE /api/rooms/studio/members/bob': { status: 204 },
+    })
+    const dialog = await open()
+
+    fireEvent.change(await dialog.findByLabelText('Role for bob'), { target: { value: 'viewer' } })
+    await waitFor(() => expect(server.calls.find((call) => call.method === 'PATCH')?.body).toEqual({ role: 'viewer' }))
+
+    fireEvent.click(dialog.getByRole('button', { name: 'Remove' }))
+    expect(server.calls.some((call) => call.method === 'DELETE')).toBe(false) // not until confirmed
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(server.calls.some((call) => call.method === 'DELETE')).toBe(true))
+  })
+
+  it('lets the host delete the room after confirming', async () => {
+    signedIn()
+    const server = fakeServer({ ...routes, 'DELETE /api/rooms/studio': { status: 204 } })
+    const dialog = await open()
+
+    fireEvent.click(dialog.getByRole('button', { name: 'Delete room' }))
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(server.calls.some((call) => call.method === 'DELETE' && call.path === '/api/rooms/studio')).toBe(true)
+  })
+
+  it('lets a guest leave, and shows no host controls', async () => {
+    signedIn()
+    const theirs = room({ role: 'editor', host: 'bob' })
+    const server = fakeServer({
+      ...me,
+      'GET /api/rooms': { status: 200, body: [theirs] },
+      'GET /api/rooms/studio': { status: 200, body: { ...theirs, members: members(['bob', 'owner'], ['alice', 'editor']) } },
+      'DELETE /api/rooms/studio/members/alice': { status: 204 },
+    })
+    const dialog = await open()
+
+    await dialog.findByText('bob')
+    expect(dialog.queryByRole('combobox')).toBeNull()
+    expect(dialog.queryByRole('button', { name: 'Delete room' })).toBeNull()
+    fireEvent.click(dialog.getByRole('button', { name: 'Leave room' }))
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(server.calls.some((call) => call.path === '/api/rooms/studio/members/alice')).toBe(true))
+  })
+})
+
+describe('a save request', () => {
+  const asking = room({ save_requests: [{ id: 'req1', username: 'bob', requested_at: '2026-11-16T12:30:00Z' }] })
+
+  it('pops up for the host, and Approve tells the server', async () => {
+    signedIn()
+    const rooms = [asking]
+    const server = fakeServer({
+      ...me,
+      'GET /api/rooms': () => ({ status: 200, body: rooms }),
+      'POST /api/rooms/studio/save-requests/req1': () => {
+        rooms[0] = room()
+        return { status: 204 }
+      },
+    })
+    renderApp()
+
+    const popup = within(await screen.findByRole('dialog', { name: 'bob would like to save the project' }))
+    fireEvent.click(popup.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(server.calls.find((call) => call.method === 'POST')?.body).toEqual({ approve: true })
+  })
+
+  it('Deny tells the server no', async () => {
+    signedIn()
+    const server = fakeServer({
+      ...me,
+      'GET /api/rooms': { status: 200, body: [asking] },
+      'POST /api/rooms/studio/save-requests/req1': { status: 204 },
+    })
+    renderApp()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Deny' }))
+
+    await waitFor(() => expect(server.calls.find((call) => call.method === 'POST')?.body).toEqual({ approve: false }))
+  })
+
+  it("explains when approving can't save yet, and keeps the pop-up", async () => {
+    signedIn()
+    fakeServer({
+      ...me,
+      'GET /api/rooms': { status: 200, body: [asking] },
+      'POST /api/rooms/studio/save-requests/req1': {
+        status: 409,
+        body: { detail: 'open this room in Blender first: the project is saved from your Blender' },
+      },
+    })
+    renderApp()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Open this room in Blender first/)
+    expect(screen.getByRole('dialog', { name: 'bob would like to save the project' })).toBeTruthy()
+  })
+})
+
+describe('the background', () => {
+  // The form's "Blender file" section and the background once shared a class name, which hid
+  // the file picker behind the page.
+  it("doesn't share a class with anything in the page", async () => {
+    signedIn()
+    fakeServer({ ...me, 'GET /api/rooms': { status: 200, body: [] } })
+    const { container } = renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Host room' }))
+
+    const backdrop = container.querySelector('[aria-hidden="true"].backdrop')!
+    const classes = new Set(backdrop.className.split(' '))
+    for (const element of document.querySelectorAll('[class]')) {
+      if (backdrop.contains(element)) continue
+      expect([...element.classList].filter((name) => classes.has(name))).toEqual([])
+    }
+    expect(screen.getByLabelText('Blender file')).toBeTruthy()
   })
 })

@@ -69,7 +69,7 @@ def sign_up(server: str, room: str) -> str:
     post(f"{server}/api/auth/register", credentials)
     token = post(f"{server}/api/auth/login", credentials)["token"]
     try:
-        post(f"{server}/api/rooms", {"room_id": room}, token)
+        post(f"{server}/api/rooms", {"room_id": room, "password": secrets.token_urlsafe(12)}, token)
     except urllib.error.HTTPError as exc:
         if exc.code == 409:
             raise SystemExit(f"Room {room!r} already exists on {server}; pass another --room.") from None
